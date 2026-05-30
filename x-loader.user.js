@@ -9,6 +9,8 @@
 // @grant        GM_xmlhttpRequest
 // @connect      127.0.0.1
 // @connect      localhost
+// @downloadURL  https://raw.githubusercontent.com/Esashiero/x-captions/main/x-loader.user.js
+// @updateURL    https://raw.githubusercontent.com/Esashiero/x-captions/main/x-loader.user.js
 // @run-at       document-end
 // ==/UserScript==
 
