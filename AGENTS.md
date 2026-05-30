@@ -504,3 +504,95 @@ Commit `0405510` — v7.0 production cleanup:
 - Added README.md
 
 Repo URL: `git@github.com:Esashiero/x-captions.git`
+
+---
+
+## Session Review Findings
+
+The following was recovered by systematically searching session `20260530_043515_ef7435` (112 messages, May 30 2026, 04:35-05:39) — the primary development session. The session DB indexed compacted data, so some details were reconstructed from the bootstrapping phase.
+
+### Session Bootstrapping (Messages 33649-33684)
+
+The session started with debugging Chrome CDP connectivity to use a browser profile with Tampermonkey installed.
+
+**CDP Connection Setup:**
+- Chrome was running at `/home/shiro/.hermes/chrome-debug/Default` with `--remote-debugging-port=9222`
+- The default `browser_navigate` tool spawned a *separate* headless Chromium — it did NOT use the user's debug instance
+- Fix: `hermes config set browser.cdp_url "http://127.0.0.1:9222"` (then `/reset` the session)
+- Tampermonkey extension ID observed via CDP: `dhdgffkkebhmkfjojejmpbldmpobfkfo`
+
+**DDOM Bridge Debugging Technique:**
+Tampermonkey scripts run in an isolated world where `console.log` is invisible to the host page. To bridge this gap, the session created a "DOM Bridge":
+```js
+const debug = (msg, data) => {
+    const fullMsg = `[X-Captions] ${msg}`;
+    console.log(fullMsg);  // Tampermonkey can see this locally
+    if (document.body) {
+        const existing = document.body.getAttribute('data-hermes-log') || '';
+        document.body.setAttribute('data-hermes-log',
+            (existing + '\n' + fullMsg).slice(-2000));
+    }
+};
+```
+The agent then reads via CDP:
+```js
+browser_cdp({ method: 'Runtime.evaluate',
+    params: { expression: 'document.body.getAttribute("data-hermes-log")', returnByValue: true },
+    target_id: '<pageId>' });
+```
+**Status**: This was a development-only tool. The production v7.0 removed it. Not currently present in the script.
+
+### Initial Architecture: Two-File Loader
+
+The script originally had a two-file architecture:
+1. **`x-loader.user.js`** — A small Tampermonkey script that:
+   - Runs at `document-end`
+   - Fetches `x-userscript.js` from `http://localhost:8765/x-userscript.js` (a local Python server)
+   - Executes it via `new Function(resp.responseText)`
+   - Provides a startup error DOM bridge
+2. **`x-userscript.js`** — The actual feature code served from a local dev server
+
+This was eventually consolidated into the single self-contained userscript when we switched to GraphQL XHR interception (which requires `@run-at document-start`).
+
+### Button Placement Evolution
+
+**Early approach (two-file era):** Used `findButtonRow()` — a generic div search:
+```js
+function findButtonRow(videoPlayer) {
+    var divs = videoPlayer.querySelectorAll('div');
+    for (var i = 0; i < divs.length; i++) {
+        var d = divs[i];
+        var btns = d.querySelectorAll(':scope > [role="button"]');
+        if (btns.length >= 4 && btns.length <= 8) return d;
+    }
+    return null;
+}
+```
+**Switched to**: Direct targeting via `[aria-label="Unmute"]` / `[aria-label="Mute"]` and `insertBefore`, which is more reliable.
+
+### Chrome Target ID Volatility
+
+Observed that X.com causes Chrome page target IDs to change frequently (page reloads, React SPA navigation). The CDP `target_id` is not stable — the agent must call `Target.getTargets` fresh before each interaction.
+
+### Model Switching During Session
+
+The session experienced model/provider switches:
+- Started with `deepseek/deepseek-v4-flash` via OpenRouter
+- Switched to `gemma-4-31b-it` via Google mid-session
+- Switched back to `deepseek:deepseek-v4-flash` via Google
+
+**Impact**: Each model switch caused context loss / recalibration. Important to capture critical information before a model switch.
+
+### Skills Discovery
+
+The user discovered the `tampermonkey` skill late in the session (message 33855). Available skills relevant to this project:
+- `tampermonkey` (category: software-development, listed as `userscript-dev` internally)
+- `browser-live-cdp` (browser-devtools) — interacting with live user-managed Chromium
+- `browser-network-intercept` (browser-devtools) — JS monkey-patching for API interception
+- `video-caption-injection` (software-development) — HTML5 caption injection patterns for React SPAs
+
+### Gaps in Session DB
+
+- The FTS5 search returned results for only ~1 match per query across the session, suggesting the session DB has compacted/indexed data, not full raw transcripts
+- The bulk of development after message 33864 (setting up caption_server.py, switching to single-file architecture, GraphQL interception, gear menu injection) is captured in the compaction summary at the top of the conversation that built this AGENTS.md, but was not directly retrievable via session_search
+- Many specific details (settings panel evolution, gear menu mutation observer tuning, video URL mapping attempts) could only be reconstructed from the compaction summary, not from raw session queries
