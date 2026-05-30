@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X.com AI Captions (Browser-Only)
 // @namespace    local.x-features
-// @version      3.0
+// @version      3.1
 // @description  AI captions for X videos via Mistral Voxtral — no server needed.
 // @author       Hermes
 // @match        https://x.com/*
@@ -12,7 +12,7 @@
 // @connect      video.twimg.com
 // @downloadURL  https://raw.githubusercontent.com/Esashiero/x-captions/main/x-loader.user.js
 // @updateURL    https://raw.githubusercontent.com/Esashiero/x-captions/main/x-loader.user.js
-// @run-at       document-end
+// @run-at       document-start
 // ==/UserScript==
 
 (function() {
@@ -23,9 +23,31 @@
     var MISTRAL_MODEL = 'voxtral-mini-latest';
 
     // ── STATE ─────────────────────────────────────────────
-    var captionsData = null;   // [{start, end, text}, ...]
+    var captionsData = null;
     var captionInterval = null;
     var isTranscribing = false;
+
+    // ── HLS URL CATCHER ───────────────────────────────────
+    // Intercept XHR requests for HLS playlists and cache the URL
+    var _capturedMasterUrl = null;
+    var _capturedAudioUrl = null;
+
+    (function() {
+        var origOpen = XMLHttpRequest.prototype.open;
+        XMLHttpRequest.prototype.open = function(method, url) {
+            if (typeof url === 'string') {
+                // Master playlist
+                if (url.indexOf('/pu/pl/') > 0 && url.indexOf('m3u8') > 0 && url.indexOf('mp4a') < 0 && url.indexOf('avc1') < 0) {
+                    _capturedMasterUrl = url;
+                }
+                // Audio playlist
+                if (url.indexOf('/pu/pl/mp4a/') > 0 && url.indexOf('.m3u8') > 0) {
+                    _capturedAudioUrl = url;
+                }
+            }
+            return origOpen.apply(this, arguments);
+        };
+    })();
 
     // ── SVG ICON ──────────────────────────────────────────
     var CC_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true" class="r-4qtqp9 r-yyyyoo r-dnmrzs r-bnwqim r-lrvibr r-m6rgpd r-z80fyv r-19wmn03"><g><path d="M9.007 8.785c1.26 0 2.075.53 2.62 1.29l-1.207.935c-.306-.42-.799-.695-1.357-.695-.93 0-1.684.754-1.684 1.684 0 .93.755 1.684 1.684 1.684.578 0 1.087-.292 1.39-.735l1.22.87c-.582.802-1.367 1.394-2.736 1.394h-.002l-.002.003c-1.766 0-3.187-1.35-3.187-3.187s1.421-3.186 3.187-3.186zm7.602 0c1.26 0 2.075.53 2.62 1.29l-1.207.935c-.306-.42-.799-.695-1.357-.695-.93 0-1.684.754-1.684 1.684 0 .93.755 1.684 1.684 1.684.578 0 1.087-.292 1.39-.735l1.22.87c-.582.802-1.367 1.394-2.736 1.394h-.002l-.002.003c-1.766 0-3.187-1.35-3.187-3.187s1.421-3.186 3.187-3.186z"></path></g></svg>';
@@ -62,8 +84,7 @@
         var w = document.querySelector('[data-x-feature="ai-captions"][data-active="true"]')
               || document.querySelector('[data-x-feature="ai-captions"]');
         if (!w) {
-            var p = document.querySelector('[data-testid="videoPlayer"]');
-            return p;
+            return document.querySelector('[data-testid="videoPlayer"]');
         }
         return w.closest('[data-testid="videoPlayer"]');
     }
@@ -92,82 +113,176 @@
         var btn = w.querySelector('button');
         if (btn) btn.style.opacity = '1';
 
-        // Already have captions cached?
         if (captionsData) { startCaptionDisplay(); return; }
         if (isTranscribing) { showStatus('Transcribing...'); return; }
 
-        // Extract video URL from the tweet page or video element
-        var videoUrl = getVideoUrl();
-        if (!videoUrl) {
-            showStatus('No video URL found');
-            console.log('[X] Failed to extract video URL');
-            return;
-        }
-        console.log('[X] Video URL:', videoUrl);
-
-        showStatus('Transcribing...');
+        showStatus('Starting...');
         isTranscribing = true;
-        transcribe(videoUrl, w);
+        startTranscription(w);
     }
 
-    // ── VIDEO URL EXTRACTION ─────────────────────────────
-    function getVideoUrl() {
-        // Method 1: From the video element's src
-        var video = document.querySelector('[data-testid="videoPlayer"] video');
-        if (video && video.currentSrc) return video.currentSrc;
-        if (video && video.src && video.src !== location.href) return video.src;
+    // ── GET HLS PLAYLIST URL ─────────────────────────────
+    function findPlaylistUrl() {
+        // Method 1: Use captured URL from XHR interceptor
+        if (_capturedMasterUrl) return _capturedMasterUrl;
 
-        // Method 2: From tweet data embedded in the page
-        // X.com embeds tweet data in a script with type "application/ld+json" or __NEXT_DATA__
+        // Method 2: Use performance entries
         try {
-            // Try JSON-LD first
-            var ldScripts = document.querySelectorAll('script[type="application/ld+json"]');
-            for (var i = 0; i < ldScripts.length; i++) {
-                var data = JSON.parse(ldScripts[i].textContent);
-                if (data && data.video && data.video.contentUrl) {
-                    return data.video.contentUrl;
+            var entries = performance.getEntriesByType('resource');
+            for (var i = entries.length - 1; i >= 0; i--) {
+                var name = entries[i].name;
+                if (name.indexOf('/pu/pl/') > 0 && name.indexOf('.m3u8') > 0
+                    && name.indexOf('mp4a') < 0 && name.indexOf('avc1') < 0) {
+                    return name;
                 }
             }
-        } catch(e) { /* ignore */ }
+        } catch(e) {}
 
-        // Method 3: Try __NEXT_DATA__ (Next.js)
-        try {
-            var nextData = document.getElementById('__NEXT_DATA__');
-            if (nextData) {
-                var parsed = JSON.parse(nextData.textContent);
-                // Navigate the props tree to find video info
-                var props = parsed.props || {};
-                var pageProps = props.pageProps || {};
-                var tweet = pageProps.tweet || pageProps.status || {};
-                var media = tweet.media || tweet.extended_entities?.media || [];
-                for (var i = 0; i < media.length; i++) {
-                    if (media[i].type === 'video' || media[i].type === 'animated_gif') {
-                        var variants = media[i].video_info?.variants || [];
-                        // Pick the highest bitrate MP4
-                        var best = null;
-                        for (var j = 0; j < variants.length; j++) {
-                            if (variants[j].content_type === 'video/mp4' &&
-                                (!best || variants[j].bitrate > best.bitrate)) {
-                                best = variants[j];
-                            }
-                        }
-                        if (best) return best.url;
-                    }
-                }
-            }
-        } catch(e) { /* ignore */ }
-
-        // Method 4: From the page's canonical URL (we have the tweet URL, fetch the API from browser)
-        // This is a last resort — the video element should already have the URL
         return null;
     }
 
-    // ── MISTRAL TRANSCRIPTION ────────────────────────────
-    function transcribe(videoUrl, btnWrapper) {
-        // Build multipart form-data manually (GM_xmlhttpRequest doesn't support FormData)
-        var boundary = '----FormBoundary' + Math.random().toString(36).slice(2);
+    // ── HLS PARSING & AUDIO DOWNLOAD ─────────────────────
+    function startTranscription() {
+        var masterUrl = findPlaylistUrl();
+        if (!masterUrl) {
+            showStatus('Waiting for video...');
+            // Retry after a short delay (video may still be loading)
+            setTimeout(function() {
+                masterUrl = findPlaylistUrl();
+                if (!masterUrl) {
+                    showStatus('No video data');
+                    isTranscribing = false;
+                    return;
+                }
+                fetchAudioFromMaster(masterUrl);
+            }, 2000);
+            return;
+        }
+        fetchAudioFromMaster(masterUrl);
+    }
 
+    function fetchAudioFromMaster(masterUrl) {
+        showStatus('Loading audio...');
+
+        fetch(masterUrl).then(function(r) { return r.text(); }).then(function(masterText) {
+            // Parse master playlist for audio playlists
+            // Look for audio groups: TYPE=AUDIO,GROUP-ID="audio-128000"
+            var audioGroups = [];
+            var lines = masterText.split('\n');
+            var baseUrl = masterUrl.split('/pu/pl/')[0];
+
+            for (var i = 0; i < lines.length; i++) {
+                var line = lines[i].trim();
+                if (line.indexOf('#EXT-X-MEDIA:TYPE=AUDIO') === 0) {
+                    var match = line.match(/GROUP-ID="([^"]+)"/);
+                    var uriMatch = line.match(/URI="([^"]+)"/);
+                    if (match && uriMatch) {
+                        var groupId = match[1];
+                        var bitrate = parseInt(groupId.split('-')[1] || '0', 10);
+                        var uri = uriMatch[1];
+                        // Full URL: baseUrl + uri
+                        var fullUrl = uri.indexOf('http') === 0 ? uri : (baseUrl + uri);
+                        audioGroups.push({ groupId: groupId, bitrate: bitrate, url: fullUrl });
+                    }
+                }
+            }
+
+            // Pick the highest bitrate audio
+            audioGroups.sort(function(a, b) { return b.bitrate - a.bitrate; });
+            var bestAudio = audioGroups[0];
+            if (!bestAudio) {
+                showStatus('No audio found');
+                isTranscribing = false;
+                return;
+            }
+
+            console.log('[X] Audio playlist:', bestAudio.url);
+            fetchAudioPlaylist(bestAudio.url, baseUrl);
+        })['catch'](function(err) {
+            console.error('[X] Master fetch failed:', err);
+            showStatus('Network error');
+            isTranscribing = false;
+        });
+    }
+
+    function fetchAudioPlaylist(audioPlaylistUrl, baseUrl) {
+        fetch(audioPlaylistUrl).then(function(r) { return r.text(); }).then(function(playlistText) {
+            var lines = playlistText.split('\n');
+            var initUrl = null;
+            var segmentUrls = [];
+
+            for (var i = 0; i < lines.length; i++) {
+                var line = lines[i].trim();
+                // Init segment: #EXT-X-MAP:URI="..."
+                if (line.indexOf('#EXT-X-MAP:URI="') === 0) {
+                    var match = line.match(/URI="([^"]+)"/);
+                    if (match) {
+                        initUrl = match[1].indexOf('http') === 0 ? match[1] : ('https://video.twimg.com' + match[1]);
+                    }
+                }
+                // Segment: /ext_tw_video/...m4s (not a comment or directive)
+                if (line.indexOf('/ext_tw_video/') === 0 && line.indexOf('.m4s') > 0) {
+                    var segUrl = 'https://video.twimg.com' + line;
+                    segmentUrls.push(segUrl);
+                }
+            }
+
+            if (!initUrl || segmentUrls.length === 0) {
+                showStatus('Empty audio playlist');
+                isTranscribing = false;
+                return;
+            }
+
+            console.log('[X] Audio init:', initUrl);
+            console.log('[X] Audio segments:', segmentUrls.length);
+
+            // Download init segment
+            showStatus('Downloading audio (' + segmentUrls.length + ' segments)...');
+            downloadAllAudio(initUrl, segmentUrls);
+        })['catch'](function(err) {
+            console.error('[X] Playlist fetch failed:', err);
+            showStatus('Network error');
+            isTranscribing = false;
+        });
+    }
+
+    function downloadAllAudio(initUrl, segmentUrls) {
+        var allUrls = [initUrl].concat(segmentUrls);
+        var blobs = [];
+        var downloaded = 0;
+        var totalSize = 0;
+
+        allUrls.forEach(function(url, idx) {
+            fetch(url).then(function(r) { return r.blob(); }).then(function(blob) {
+                blobs[idx] = blob;
+                totalSize += blob.size;
+                downloaded++;
+                if (downloaded % 10 === 0 || downloaded === allUrls.length) {
+                    showStatus('Downloading audio (' + downloaded + '/' + allUrls.length + ', ' + Math.round(totalSize / 1024) + 'KB)');
+                }
+                if (downloaded === allUrls.length) {
+                    console.log('[X] Downloaded ' + totalSize + ' bytes');
+                    sendToMistral(blobs, totalSize);
+                }
+            })['catch'](function(err) {
+                console.error('[X] Segment ' + idx + ' failed:', err);
+                showStatus('Download error');
+                isTranscribing = false;
+            });
+        });
+    }
+
+    // ── MISTRAL TRANSCRIPTION ────────────────────────────
+    function sendToMistral(blobs, totalSize) {
+        showStatus('Transcribing... (' + Math.round(totalSize / 1024) + 'KB)');
+
+        // Concatenate all blobs into one fragmented MP4
+        var audioBlob = new Blob(blobs, { type: 'audio/mp4' });
+
+        // Build multipart form-data manually
+        var boundary = '----FormBoundary' + Math.random().toString(36).slice(2);
         var parts = [];
+
         function addField(name, value) {
             parts.push('--' + boundary);
             parts.push('Content-Disposition: form-data; name="' + name + '"');
@@ -175,68 +290,91 @@
             parts.push(String(value));
         }
 
+        function addFile(name, filename, blob) {
+            parts.push('--' + boundary);
+            parts.push('Content-Disposition: form-data; name="' + name + '"; filename="' + filename + '"');
+            parts.push('Content-Type: ' + blob.type);
+            parts.push('');
+            // Binary data will be appended below
+        }
+
         addField('model', MISTRAL_MODEL);
-        addField('file_url', videoUrl);
         addField('timestamp_granularities', 'segment');
+        addFile('file', 'audio.mp4', audioBlob);
 
         parts.push('--' + boundary + '--');
-        var body = parts.join('\r\n');
 
-        GM_xmlhttpRequest({
-            method: 'POST',
-            url: 'https://api.mistral.ai/v1/audio/transcriptions',
-            headers: {
-                'Authorization': 'Bearer ' + MISTRAL_API_KEY,
-                'Content-Type': 'multipart/form-data; boundary=' + boundary
-            },
-            data: body,
-            onload: function(r) {
-                isTranscribing = false;
-                try {
-                    var resp = JSON.parse(r.responseText);
-                    console.log('[X] Mistral response:', resp);
+        // Build the body: text parts as strings, binary as ArrayBuffer
+        var textBody = parts.slice(0, -1).join('\r\n');
+        var closing = '\r\n--' + boundary + '--';
 
-                    if (resp.segments && resp.segments.length > 0) {
-                        // Map Mistral segments: {start, end, text}
-                        captionsData = resp.segments.map(function(s) {
-                            return {
-                                start: s.start,
-                                end: s.end,
-                                text: s.text.trim()
-                            };
-                        });
-                        console.log('[X] Got', captionsData.length, 'segments');
-                        hideOverlay();
-                        startCaptionDisplay();
-                    } else if (resp.text) {
-                        // No segments but has text — create a single segment
-                        // Estimate duration from usage or use a default
-                        var duration = resp.usage ? (resp.usage.prompt_audio_seconds || 60) : 60;
-                        captionsData = [{start: 0, end: duration, text: resp.text.trim()}];
-                        hideOverlay();
-                        startCaptionDisplay();
-                    } else if (resp.error || resp.message) {
-                        showStatus('API Error');
-                        console.error('[X] Mistral error:', resp);
-                    } else {
-                        showStatus('Empty response');
-                        console.error('[X] Unexpected response:', resp);
-                    }
-                } catch(e) {
-                    showStatus('Parse error');
-                    console.error('[X] Parse error:', e, r.responseText.slice(0, 300));
+        // Convert text body to Uint8Array, then insert the audio blob, then add closing
+        var encoder = new TextEncoder();
+        var textPrefix = encoder.encode(textBody + '\r\n');
+        var textSuffix = encoder.encode('\r\n' + closing);
+
+        return audioBlob.arrayBuffer().then(function(audioBuffer) {
+            var totalLength = textPrefix.length + audioBuffer.byteLength + textSuffix.length;
+            var combined = new Uint8Array(totalLength);
+            combined.set(textPrefix, 0);
+            combined.set(new Uint8Array(audioBuffer), textPrefix.length);
+            combined.set(textSuffix, textPrefix.length + audioBuffer.byteLength);
+
+            // Convert binary to string safely (avoids stack limit)
+            var binaryStr = '';
+            var chunkSize = 65536;
+            for (var i = 0; i < combined.length; i += chunkSize) {
+                var end = Math.min(i + chunkSize, combined.length);
+                var chunk = combined.subarray(i, end);
+                for (var j = 0; j < chunk.length; j++) {
+                    binaryStr += String.fromCharCode(chunk[j]);
                 }
-            },
-            onerror: function() {
-                isTranscribing = false;
-                showStatus('API unreachable');
-                console.error('[X] Mistral API unreachable');
-            },
-            ontimeout: function() {
-                isTranscribing = false;
-                showStatus('API timeout');
-                console.error('[X] Mistral API timeout');
             }
+
+            GM_xmlhttpRequest({
+                method: 'POST',
+                url: 'https://api.mistral.ai/v1/audio/transcriptions',
+                headers: {
+                    'Authorization': 'Bearer ' + MISTRAL_API_KEY,
+                    'Content-Type': 'multipart/form-data; boundary=' + boundary
+                },
+                data: binaryStr,
+                onload: function(r) {
+                    isTranscribing = false;
+                    try {
+                        var resp = JSON.parse(r.responseText);
+                        console.log('[X] Mistral response:', resp);
+
+                        if (resp.segments && resp.segments.length > 0) {
+                            captionsData = resp.segments.map(function(s) {
+                                return { start: s.start, end: s.end, text: (s.text || '').trim() };
+                            });
+                            console.log('[X] Got', captionsData.length, 'segments');
+                            hideOverlay();
+                            startCaptionDisplay();
+                        } else if (resp.text) {
+                            var duration = resp.usage ? (resp.usage.prompt_audio_seconds || 60) : 60;
+                            captionsData = [{start: 0, end: duration, text: resp.text.trim()}];
+                            hideOverlay();
+                            startCaptionDisplay();
+                        } else {
+                            showStatus('API Error');
+                            console.error('[X] Mistral error:', resp);
+                        }
+                    } catch(e) {
+                        showStatus('Parse error');
+                        console.error('[X] Parse:', e, (r.responseText || '').slice(0, 300));
+                    }
+                },
+                onerror: function() {
+                    isTranscribing = false;
+                    showStatus('API unreachable');
+                },
+                ontimeout: function() {
+                    isTranscribing = false;
+                    showStatus('API timeout');
+                }
+            });
         });
     }
 
@@ -271,7 +409,6 @@
         t.id = 'caption-text';
         t.style.cssText = 'display:inline-block;background:rgba(0,0,0,0.85);color:white;padding:8px 16px;border-radius:6px;font:15px/1.5 sans-serif;max-width:85%;text-align:center;';
 
-        // Show first caption immediately if video is playing
         var c = v.currentTime;
         for (var i = 0; i < captionsData.length; i++) {
             if (c >= captionsData[i].start && c < captionsData[i].end) {
@@ -336,7 +473,7 @@
     }
 
     function init() {
-        console.log('[X] Start v3.0 (browser-only)');
+        console.log('[X] Start v3.1 (HLS audio capture)');
         new MutationObserver(function() {
             var ps = document.querySelectorAll('[data-testid="videoPlayer"]');
             for (var i = 0; i < ps.length; i++) processPlayer(ps[i]);
