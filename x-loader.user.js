@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name         X.com AI Captions
 // @namespace    local.x-features
-// @version      6.1
+// @version      6.2
 // @description  AI captions for X videos via Mistral. No server.
 // @author       Hermes
 // @match        https://x.com/*
 // @match        https://twitter.com/*
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @connect      api.mistral.ai
 // @downloadURL  https://raw.githubusercontent.com/Esashiero/x-captions/main/x-loader.user.js
 // @updateURL    https://raw.githubusercontent.com/Esashiero/x-captions/main/x-loader.user.js
 // @run-at       document-start
@@ -19,28 +20,29 @@
     var _videoUrl = null;
     var caps = null, intv = null, busy = false;
 
-    // ── Intercept XHR, not fetch (bundlers capture fetch at init) ─
-    var ox = XMLHttpRequest.prototype.open;
-    var os = XMLHttpRequest.prototype.send;
-    XMLHttpRequest.prototype.open = function(m, u) {
+    // ── Intercept page's XHR via unsafeWindow ────────────
+    var W = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+    var ox = W.XMLHttpRequest.prototype.open;
+    W.XMLHttpRequest.prototype.open = function(m, u) {
         this._xurl = typeof u === 'string' ? u : '';
         return ox.apply(this, arguments);
     };
-    XMLHttpRequest.prototype.send = function(b) {
+    var os = W.XMLHttpRequest.prototype.send;
+    W.XMLHttpRequest.prototype.send = function(b) {
         var xhr = this;
         if (xhr._xurl && xhr._xurl.indexOf('TweetResultByRestId') > -1) {
             xhr.addEventListener('load', function() {
                 try {
                     var d = JSON.parse(xhr.responseText);
-                    var result = d.data && d.data.tweetResult && d.data.tweetResult.result;
-                    if (!result) return;
-                    if (result.__typename === 'TweetWithVisibilityResults') result = result.tweet;
-                    var media = result.legacy && result.legacy.extended_entities && result.legacy.extended_entities.media;
-                    if (!media) return;
+                    var r = d.data && d.data.tweetResult && d.data.tweetResult.result;
+                    if (!r) return;
+                    if (r.__typename === 'TweetWithVisibilityResults') r = r.tweet;
+                    var m = r.legacy && r.legacy.extended_entities && r.legacy.extended_entities.media;
+                    if (!m) return;
                     var best = null, br = -1;
-                    for (var i=0; i<media.length; i++) {
-                        if (media[i].type !== 'video' && media[i].type !== 'animated_gif') continue;
-                        var v = media[i].video_info && media[i].video_info.variants;
+                    for (var i=0; i<m.length; i++) {
+                        if (m[i].type !== 'video' && m[i].type !== 'animated_gif') continue;
+                        var v = m[i].video_info && m[i].video_info.variants;
                         if (!v) continue;
                         for (var j=0; j<v.length; j++) {
                             if (v[j].content_type === 'video/mp4' && (v[j].bitrate||0) > br) {
@@ -48,7 +50,7 @@
                             }
                         }
                     }
-                    if (best) { _videoUrl = best; console.log('[X] got MP4:', best.slice(0,100)); }
+                    if (best) { _videoUrl = best; console.log('[X] MP4:', best.slice(0,100)); }
                 } catch(e) {}
             });
         }
@@ -72,7 +74,7 @@
         if(w.getAttribute('data-on')==='1'){w.setAttribute('data-on','0');var b=w.querySelector('button');if(b)b.style.opacity='.5';hide();if(intv){clearInterval(intv);intv=null;}return;}
         w.setAttribute('data-on','1');var b=w.querySelector('button');if(b)b.style.opacity='1';
         if(caps){showCaps();return;}if(busy){sts('Working...');return;}
-        if (!_videoUrl) { sts('No video data yet. Try clicking after video loads.'); busy=false; return; }
+        if (!_videoUrl) { sts('No video data yet'); busy=false; return; }
         busy=true; sts('Transcribing...'); transcribe(_videoUrl);
     }
 
@@ -83,21 +85,26 @@
         p.push('--'+bd); p.push('Content-Disposition: form-data; name="file_url"'); p.push(''); p.push(videoUrl);
         p.push('--'+bd); p.push('Content-Disposition: form-data; name="timestamp_granularities"'); p.push(''); p.push('segment');
         p.push('--'+bd+'--');
-        var body = p.join('\r\n');
-        fetch('https://api.mistral.ai/v1/audio/transcriptions', {
-            method:'POST',
+        GM_xmlhttpRequest({
+            method:'POST', url:'https://api.mistral.ai/v1/audio/transcriptions',
             headers:{'Authorization':'Bearer '+KEY,'Content-Type':'multipart/form-data; boundary='+bd},
-            body:body
-        }).then(function(r){return r.json();}).then(function(j){
-            busy=false;
-            console.log('[X] Mistral:', JSON.stringify(j).slice(0,300));
-            if(j.segments&&j.segments.length){
-                caps=j.segments.map(function(s){return{start:s.start,end:s.end,text:(s.text||'').trim()};});
-                console.log('[X] OK',caps.length);hide();showCaps();
-            } else if(j.text){
-                caps=[{start:0,end:120,text:j.text.trim()}];hide();showCaps();
-            } else { sts('API err'); console.error('[X]',j); }
-        }).catch(function(e){busy=false;sts('API err');console.error('[X]',e);});
+            data:p.join('\r\n'),
+            onload:function(r){
+                busy=false;
+                try{
+                    var j=JSON.parse(r.responseText);
+                    console.log('[X] Mistral:', JSON.stringify(j).slice(0,300));
+                    if(j.segments&&j.segments.length){
+                        caps=j.segments.map(function(s){return{start:s.start,end:s.end,text:(s.text||'').trim()};});
+                        console.log('[X] OK',caps.length);hide();showCaps();
+                    } else if(j.text){
+                        caps=[{start:0,end:120,text:j.text.trim()}];hide();showCaps();
+                    } else { sts('API err'); console.error('[X]',j); }
+                }catch(e){sts('Parse err');console.error('[X]',e);}
+            },
+            onerror:function(){busy=false;sts('API down');},
+            ontimeout:function(){busy=false;sts('Timeout');}
+        });
     }
 
     // ── Display ───────────────────────────────────────────
@@ -123,6 +130,6 @@
     }
     var rt=0;
     function tryGo(){var ps=document.querySelectorAll('[data-testid="videoPlayer"]');var ok=false;for(var i=0;i<ps.length;i++){inj(ps[i]);if(ps[i].querySelector('[data-x-feature="cc"]'))ok=true;}if(!ok&&rt<60){rt++;setTimeout(tryGo,500);}}
-    function init(){console.log('[X] v6.1');new MutationObserver(function(){var ps=document.querySelectorAll('[data-testid="videoPlayer"]');for(var i=0;i<ps.length;i++)inj(ps[i]);}).observe(document.body,{childList:true,subtree:true});tryGo();}
+    function init(){console.log('[X] v6.2');new MutationObserver(function(){var ps=document.querySelectorAll('[data-testid="videoPlayer"]');for(var i=0;i<ps.length;i++)inj(ps[i]);}).observe(document.body,{childList:true,subtree:true});tryGo();}
     if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
 })();
