@@ -1,0 +1,25 @@
+    // ── Inject caption settings into gear menu ──────────
+    function watchGearMenu() {
+        var obs = new MutationObserver(function() {
+            if (document.querySelector('[data-x-feature="gear-captions"]')) return;
+            var all = document.querySelectorAll('div, span');
+            for (var i=0; i<all.length; i++) {
+                if (all[i].textContent && all[i].textContent.indexOf('Playback speed') > -1) {
+                    var menu = all[i].parentElement;
+                    if (!menu) continue;
+                    var it = document.createElement('div');
+                    it.setAttribute('data-x-feature','gear-captions');
+                    it.style.cssText = 'display:flex;align-items:center;padding:10px 12px;cursor:pointer;color:#fff;font:13px/1.4 sans-serif;border-top:1px solid #333;';
+                    it.innerHTML = '<span style="margin-right:6px;"></span> Captions';
+                    it.onclick = function() {
+                        var cc = document.querySelector('[data-x-feature="cc"]');
+                        if (cc) openSett(cc);
+                        document.body.click();
+                    };
+                    menu.appendChild(it);
+                    break;
+                }
+            }
+        });
+        obs.observe(document.body, {childList:true, subtree:true});
+    }
