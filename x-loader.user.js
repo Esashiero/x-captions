@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X.com AI Captions
 // @namespace    local.x-features
-// @version      6.8
+// @version      6.9
 // @description  AI captions for X videos via Mistral. No server.
 // @author       Hermes
 // @match        https://x.com/*
@@ -123,7 +123,7 @@
 
     // ── Inject into gear menu ────────────────────────────
     function injMenu() {
-        var mc = document.querySelector('.css-175oi2r.r-1867qdf.r-eqz5dr.r-iphfwy.r-o59np7.r-qjj4hq.r-tskmnb');
+        var mc = document.querySelector('[role="dialog"].r-tskmnb, [role="menu"].r-tskmnb');
         if (!mc || mc.querySelector('[data-x-gc]')) return;
         var ref = mc.children[0];
         if (!ref) return;
@@ -336,6 +336,6 @@
     }
     var rt=0;
     function tryGo(){var ps=document.querySelectorAll('[data-testid="videoPlayer"]');var ok=false;for(var i=0;i<ps.length;i++){inj(ps[i]);if(ps[i].querySelector('[data-x-feature="cc"]'))ok=true;}if(!ok&&rt<60){rt++;setTimeout(tryGo,500);}}
-    function init(){console.log('[X] v6.8');watchMenu();new MutationObserver(function(){var ps=document.querySelectorAll('[data-testid="videoPlayer"]');for(var i=0;i<ps.length;i++)inj(ps[i]);}).observe(document.body,{childList:true,subtree:true});tryGo();}
+    function init(){console.log('[X] v6.9');watchMenu();new MutationObserver(function(){var ps=document.querySelectorAll('[data-testid="videoPlayer"]');for(var i=0;i<ps.length;i++)inj(ps[i]);}).observe(document.body,{childList:true,subtree:true});tryGo();}
     if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
 })();
