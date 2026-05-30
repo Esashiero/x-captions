@@ -173,7 +173,7 @@
 
             for (var i = 0; i < lines.length; i++) {
                 var line = lines[i].trim();
-                if (line.indexOf('#EXT-X-MEDIA:TYPE=AUDIO') === 0) {
+                if (line.indexOf('TYPE=AUDIO') > 0 && line.indexOf('#EXT-X-MEDIA') >= 0) {
                     var match = line.match(/GROUP-ID="([^"]+)"/);
                     var uriMatch = line.match(/URI="([^"]+)"/);
                     if (match && uriMatch) {
