@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X.com AI Captions
 // @namespace    local.x-features
-// @version      7.0
+// @version      7.1
 // @description  AI captions for X/Twitter videos. No server needed.
 // @author       Hermes
 // @match        https://x.com/*
@@ -17,23 +17,17 @@
 (function() {
     'use strict';
 
-    var _videoUrl = null, caps = null, intv = null, busy = false;
+    var _videoUrls = {}, caps = null, intv = null, busy = false;
     var SKEY = 'x_captions_settings';
 
     // ── Providers ────────────────────────────────────────
     var PROVIDERS = {};
 
     function loadCustomProv() {
-        try {
-            var raw = localStorage.getItem('x_captions_custom_providers');
-            return raw ? JSON.parse(raw) : {};
-        } catch(e) { return {}; }
+        try { var raw = localStorage.getItem('x_captions_custom_providers'); return raw ? JSON.parse(raw) : {}; } catch(e) { return {}; }
     }
-    function saveCustomProv(cp) {
-        localStorage.setItem('x_captions_custom_providers', JSON.stringify(cp));
-    }
+    function saveCustomProv(cp) { localStorage.setItem('x_captions_custom_providers', JSON.stringify(cp)); }
 
-    // Rebuild PROVIDERS from built-in + custom
     function buildProviders() {
         PROVIDERS = {
             mistral: {name:'Mistral AI', key:'dGjgnYE6kcY5aTFjExd5lD5DAMN1U1ld',
@@ -43,15 +37,11 @@
         };
         var cp = loadCustomProv();
         for (var k in cp) {
-            var p = cp[k];
-            var m = {};
+            var p = cp[k], m = {};
             m[p.model || 'custom-model'] = p.model || 'Custom Model';
             PROVIDERS['cust_'+k] = {
-                name: p.name || 'Custom',
-                key: p.key || '',
-                models: m,
-                transcribe: p.transcribe_url || '',
-                chat: p.chat_url || ''
+                name: p.name || 'Custom', key: p.key || '', models: m,
+                transcribe: p.transcribe_url || '', chat: p.chat_url || ''
             };
         }
     }
@@ -75,7 +65,7 @@
         return 'rgba('+r+','+g+','+b+','+o+')';
     }
 
-    // ── Intercept XHR (capture MP4 URL from X.com) ──────
+    // ── Intercept XHR (capture MP4 URL per tweet ID) ───
     var W = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
     var ox = W.XMLHttpRequest.prototype.open;
     W.XMLHttpRequest.prototype.open = function(m, u) {
@@ -86,12 +76,19 @@
     W.XMLHttpRequest.prototype.send = function(b) {
         var xhr = this;
         if (xhr._xurl && xhr._xurl.indexOf('TweetResultByRestId') > -1) {
+            // Extract tweet ID from URL-encoded query string
+            var tweetId = null;
+            var tm = xhr._xurl.match(/tweetId[%22:]+(\d+)/);
+            if (tm) tweetId = tm[1];
+
             xhr.addEventListener('load', function() {
                 try {
                     var d = JSON.parse(xhr.responseText);
                     var r = d.data && d.data.tweetResult && d.data.tweetResult.result;
                     if (!r) return;
                     if (r.__typename === 'TweetWithVisibilityResults') r = r.tweet;
+                    // Fallback: extract tweet ID from response if URL parsing failed
+                    if (!tweetId && r.legacy && r.legacy.conversation_id_str) tweetId = r.legacy.conversation_id_str;
                     var m = r.legacy && r.legacy.extended_entities && r.legacy.extended_entities.media;
                     if (!m) return;
                     var best = null, br = -1;
@@ -104,12 +101,24 @@
                                 { best = v[j].url; br = v[j].bitrate||0; }
                         }
                     }
-                    if (best) _videoUrl = best;
+                    if (best && tweetId) _videoUrls[tweetId] = best;
                 } catch(e) {}
             });
         }
         return os.apply(this, arguments);
     };
+
+    // ── Get tweet ID from DOM for a video player ────────
+    function getTweetId(player) {
+        var art = player.closest('article[data-testid="tweet"]');
+        if (!art) return null;
+        var links = art.querySelectorAll('a[href*="/status/"]');
+        for (var i = 0; i < links.length; i++) {
+            var m = links[i].href.match(/\/status\/(\d+)/);
+            if (m) return m[1];
+        }
+        return null;
+    }
 
     // ── CC button (injects into video controls) ─────────
     var SVG = '<svg viewBox="0 0 24 24" aria-hidden="true" class="r-4qtqp9 r-yyyyoo r-dnmrzs r-bnwqim r-lrvibr r-m6rgpd r-z80fyv r-19wmn03"><g><path d="M9.007 8.785c1.26 0 2.075.53 2.62 1.29l-1.207.935c-.306-.42-.799-.695-1.357-.695-.93 0-1.684.754-1.684 1.684 0 .93.755 1.684 1.684 1.684.578 0 1.087-.292 1.39-.735l1.22.87c-.582.802-1.367 1.394-2.736 1.394h-.002l-.002.003c-1.766 0-3.187-1.35-3.187-3.187s1.421-3.186 3.187-3.186zm7.602 0c1.26 0 2.075.53 2.62 1.29l-1.207.935c-.306-.42-.799-.695-1.357-.695-.93 0-1.684.754-1.684 1.684 0 .93.755 1.684 1.684 1.684.578 0 1.087-.292 1.39-.735l1.22.87c-.582.802-1.367 1.394-2.736 1.394h-.002l-.002.003c-1.766 0-3.187-1.35-3.187-3.187s1.421-3.186 3.187-3.186z"/></g></svg>';
@@ -139,8 +148,12 @@
         w.setAttribute('data-on','1');
         var b=w.querySelector('button'); if(b) b.style.opacity='1';
         if(caps){showCaps();return;} if(busy){statusMsg('Working...');return;}
-        if(!_videoUrl){statusMsg('No video data yet');busy=false;return;}
-        busy=true; statusMsg('Transcribing...'); transcribe(_videoUrl);
+
+        // Look up video URL for this specific player
+        var pl = w.closest('[data-testid="videoPlayer"]');
+        var url = _videoUrls[getTweetId(pl)];
+        if (!url) { statusMsg('No video data yet'); busy=false; return; }
+        busy=true; w.setAttribute('data-busy','1'); statusMsg('Transcribing...'); transcribe(url);
     }
 
     // ── Caption positioning (follows controls bar) ──────
@@ -201,11 +214,9 @@
         var langs = '';
         for (var k in LANG_MAP) langs += '<option value="'+k+'"'+(s.lang===k?' selected':'')+'>'+LANG_MAP[k]+'</option>';
 
-        var provs = '', customCount = 0;
-        for (var pk in PROVIDERS) {
-            if (pk.indexOf('cust_')===0) customCount++;
+        var provs = '';
+        for (var pk in PROVIDERS)
             provs += '<option value="'+pk+'"'+(s.provider===pk?' selected':'')+'>'+PROVIDERS[pk].name+'</option>';
-        }
         var curProv = PROVIDERS[s.provider] || PROVIDERS[DEF.provider];
         var curModels = curProv.models || {};
         var modelsHtml = '';
@@ -241,12 +252,19 @@
             '<button id="xcs-save" style="flex:1;background:#1d9bf0;color:#fff;border:none;border-radius:4px;padding:6px 8px;cursor:pointer;font-size:12px;">Save</button>'+
             '<button id="xcs-close" style="background:#444;color:#fff;border:none;border-radius:4px;padding:6px 8px;cursor:pointer;font-size:12px;">Cancel</button></div>';
 
-        var rect = p.getBoundingClientRect();
-        pan.style.left = Math.max(10, rect.left + rect.width - 270) + 'px';
-        pan.style.top = rect.top + 'px';
+        // Append to DOM first so we can measure dimensions
         document.body.appendChild(pan);
+        // Now clamp position to viewport bounds
+        var rect = p.getBoundingClientRect();
+        var panW = pan.offsetWidth || 270;
+        var panH = pan.offsetHeight || 400;
+        var left = Math.max(10, rect.left + rect.width - panW);
+        var top = rect.top;
+        if (left + panW > window.innerWidth) left = window.innerWidth - panW - 10;
+        if (top + panH > window.innerHeight) top = window.innerHeight - panH - 10;
+        pan.style.left = Math.max(10, left) + 'px';
+        pan.style.top = Math.max(10, top) + 'px';
 
-        // Provider change → update models and toggle custom fields
         document.getElementById('xcs-provider').onchange = function() {
             var pk = this.value;
             var pv = PROVIDERS[pk];
@@ -261,9 +279,7 @@
                 if (m === pv.models) opt.selected = true;
                 sel.appendChild(opt);
             }
-            // Update API key field
             document.getElementById('xcs-key').value = pv.key || '';
-            // Pre-fill custom fields if editing existing custom provider
             if (pk.indexOf('cust_')===0) {
                 document.getElementById('xcs-cust-name').value = pv.name || '';
                 document.getElementById('xcs-cust-trans').value = pv.transcribe || '';
@@ -282,7 +298,6 @@
 
         document.getElementById('xcs-save').onclick = function() {
             var pk = document.getElementById('xcs-provider').value;
-            // If custom provider, save to localStorage
             if (pk.indexOf('cust_')===0) {
                 var cp = loadCustomProv();
                 var cid = pk.replace('cust_','');
@@ -305,7 +320,7 @@
             s.lang = document.getElementById('xcs-lang').value || 'en';
             localStorage.setItem(SKEY, JSON.stringify(s));
             var ct = document.getElementById('ct');
-            if (ct) ct.style.cssText = 'display:inline-block;background:'+bgCSS()+';color:#fff;padding:8px 16px;border-radius:6px;font:'+s.size+'px/1.5 sans-serif;max-width:85%;text-align:center;';
+            if (ct) ct.style.cssText = 'display:inline-block;background:'+bgCSS()+';color:#fff;padding:8px 16px;border-radius:6px;font:'+s.size+'px/1.5 sans-serif;max-width:85%;text-align:center;text-shadow:0 0 3px #000,0 0 5px #000;';
             if (pan.parentNode) pan.remove();
         };
         document.getElementById('xcs-close').onclick = function() { if (pan.parentNode) pan.remove(); };
@@ -317,8 +332,9 @@
         }, 100);
     }
 
-    // ── Transcription ───────────────────────────────────
-    function transcribe(url) {
+    // ── Transcription (with retry) ──────────────────────
+    function transcribe(url, attempt) {
+        attempt = attempt || 1;
         var pv = PROVIDERS[s.provider] || PROVIDERS[DEF.provider];
         var key = pv.key, model = s.model || DEF.model;
         if (!key) { busy=false; statusMsg('No API key set'); return; }
@@ -334,14 +350,29 @@
             method:'POST', url:pv.transcribe,
             headers:{'Authorization':'Bearer '+key,'Content-Type':'multipart/form-data; boundary='+bd},
             data:parts.join('\r\n'),
-            onload:function(r){handleTranscribe(r);},
-            onerror:function(){busy=false;statusMsg('API down');},
-            ontimeout:function(){busy=false;statusMsg('Timeout');}
+            onload:function(r){ handleTranscribe(r); },
+            onerror:function(){ retryTranscribe(url, attempt); },
+            ontimeout:function(){ retryTranscribe(url, attempt); }
         });
+    }
+
+    function retryTranscribe(url, attempt) {
+        if (!busy) return; // user toggled CC off
+        if (attempt < 3) {
+            statusMsg('Retrying (attempt ' + (attempt + 1) + ')...');
+            setTimeout(function(){ transcribe(url, attempt + 1); }, 1500);
+        } else {
+            busy = false;
+            var w = document.querySelector('[data-x-feature="cc"][data-busy]');
+            if (w) w.removeAttribute('data-busy');
+            statusMsg('API failed after 3 attempts');
+        }
     }
 
     function handleTranscribe(r) {
         busy=false;
+        var w = document.querySelector('[data-x-feature="cc"][data-busy]');
+        if (w) w.removeAttribute('data-busy');
         try {
             var j=JSON.parse(r.responseText);
             if (j.segments && j.segments.length) {
@@ -359,16 +390,40 @@
                         hideCaps(); showCaps();
                         return;
                     }
+                    // Try the selected model first; on failure, the catch falls back to original text
+                    var translateModel = s.model || 'mistral-small-latest';
                     GM_xmlhttpRequest({
                         method:'POST', url:pv.chat,
                         headers:{'Authorization':'Bearer '+pv.key,'Content-Type':'application/json'},
-                        data:JSON.stringify({model:'mistral-small-latest',messages:[{role:'user',content:'Translate these sentences to '+target+'. Return ONLY the translations, one per line, preserving the exact number of lines:\n'+txts}]}),
+                        data:JSON.stringify({model:translateModel,messages:[{role:'user',content:'Translate these sentences to '+target+'. Return ONLY the translations, one per line, preserving the exact number of lines:\n'+txts}]}),
                         onload:function(r2) {
                             try {
                                 var t = JSON.parse(r2.responseText);
                                 var tr = t.choices[0].message.content.trim().split('\n');
                                 caps = raw.map(function(s,i){return{start:s.start,end:s.end,text:(tr[i]||s.text).trim()};});
-                            } catch(e) { caps = raw.map(function(s){return{start:s.start,end:s.end,text:(s.text||'').trim()};}); }
+                            } catch(e) {
+                                // Translation failed with selected model; retry with mistral-small-latest as fallback
+                                if (translateModel !== 'mistral-small-latest' && s.provider === 'mistral') {
+                                    statusMsg('Model failed, retrying with mistral-small-latest...');
+                                    GM_xmlhttpRequest({
+                                        method:'POST', url:pv.chat,
+                                        headers:{'Authorization':'Bearer '+pv.key,'Content-Type':'application/json'},
+                                        data:JSON.stringify({model:'mistral-small-latest',messages:[{role:'user',content:'Translate these sentences to '+target+'. Return ONLY the translations, one per line, preserving the exact number of lines:\n'+txts}]}),
+                                        onload:function(r3) {
+                                            try {
+                                                var t2 = JSON.parse(r3.responseText);
+                                                var tr2 = t2.choices[0].message.content.trim().split('\n');
+                                                caps = raw.map(function(s,i){return{start:s.start,end:s.end,text:(tr2[i]||s.text).trim()};});
+                                            } catch(e2) { caps = raw.map(function(s){return{start:s.start,end:s.end,text:(s.text||'').trim()};}); }
+                                            hideCaps(); showCaps();
+                                        },
+                                        onerror:function(){caps=raw.map(function(s){return{start:s.start,end:s.end,text:(s.text||'').trim()};});hideCaps();showCaps();}
+                                    });
+                                } else {
+                                    caps = raw.map(function(s){return{start:s.start,end:s.end,text:(s.text||'').trim()};});
+                                    hideCaps(); showCaps();
+                                }
+                            }
                             hideCaps(); showCaps();
                         },
                         onerror:function(){caps=raw.map(function(s){return{start:s.start,end:s.end,text:(s.text||'').trim()};});hideCaps();showCaps();}
@@ -397,7 +452,7 @@
         ripCaps(p); var o=document.createElement('div'); o.setAttribute('data-x-feature','co');
         o.style.cssText='position:absolute;bottom:'+ctrlBottom()+';left:0;right:0;text-align:center;padding:8px 16px;z-index:9999;pointer-events:none;';
         var t=document.createElement('div'); t.id='ct';
-        t.style.cssText='display:inline-block;background:'+bgCSS()+';color:#fff;padding:8px 16px;border-radius:6px;font:'+s.size+'px/1.5 sans-serif;max-width:85%;text-align:center;';
+        t.style.cssText='display:inline-block;background:'+bgCSS()+';color:#fff;padding:8px 16px;border-radius:6px;font:'+s.size+'px/1.5 sans-serif;max-width:85%;text-align:center;text-shadow:0 0 3px #000,0 0 5px #000;';
         var c=v.currentTime; for(var i=0;i<caps.length;i++){if(c>=caps[i].start&&c<caps[i].end){t.textContent=caps[i].text;break;}}
         o.appendChild(t); var vc=p.querySelector('[data-testid="videoComponent"]'); if(vc) vc.appendChild(o);
         if(intv) clearInterval(intv); intv=setInterval(function(){
@@ -420,6 +475,16 @@
     }
     var rt=0;
     function tryGo(){var ps=document.querySelectorAll('[data-testid="videoPlayer"]');var ok=false;for(var i=0;i<ps.length;i++){inject(ps[i]);if(ps[i].querySelector('[data-x-feature="cc"]'))ok=true;}if(!ok&&rt<60){rt++;setTimeout(tryGo,500);}}
-    function init(){watchMenu();new MutationObserver(function(){var ps=document.querySelectorAll('[data-testid="videoPlayer"]');for(var i=0;i<ps.length;i++)inject(ps[i]);}).observe(document.body,{childList:true,subtree:true});tryGo();}
+    function init(){
+        // Inject loading animation styles
+        if (!document.getElementById('x-cc-s')) {
+            var st = document.createElement('style'); st.id = 'x-cc-s';
+            st.textContent = '[data-x-feature="cc"][data-busy] button{animation:x-cc-pulse 1s ease-in-out infinite}[data-x-feature="cc"][data-busy] button svg{animation:x-cc-spin 2s linear infinite}@keyframes x-cc-pulse{0%,100%{opacity:.5}50%{opacity:1}}@keyframes x-cc-spin{0%{transform:rotate(0)}100%{transform:rotate(360deg)}}';
+            document.head.appendChild(st);
+        }
+        watchMenu();
+        new MutationObserver(function(){var ps=document.querySelectorAll('[data-testid="videoPlayer"]');for(var i=0;i<ps.length;i++)inject(ps[i]);}).observe(document.body,{childList:true,subtree:true});
+        tryGo();
+    }
     if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',init); else init();
 })();
