@@ -95,8 +95,30 @@
                     var j=JSON.parse(r.responseText);
                     console.log('[X] Mistral:', JSON.stringify(j).slice(0,300));
                     if(j.segments&&j.segments.length){
-                        caps=j.segments.map(function(s){return{start:s.start,end:s.end,text:(s.text||'').trim()};});
-                        console.log('[X] OK',caps.length);hide();showCaps();
+                        var rawSegs = j.segments;
+                        sts('Translating...');
+                        // Translate all segment text to English
+                        var texts = rawSegs.map(function(s){return s.text;}).join('\n');
+                        GM_xmlhttpRequest({
+                            method:'POST', url:'https://api.mistral.ai/v1/chat/completions',
+                            headers:{'Authorization':'Bearer '+KEY,'Content-Type':'application/json'},
+                            data:JSON.stringify({
+                                model:'mistral-small-latest',
+                                messages:[{role:'user',content:'Translate these sentences to English. Return ONLY the translations, one per line, preserving the exact number of lines:\n'+texts}]
+                            }),
+                            onload:function(r2){
+                                try{
+                                    var t = JSON.parse(r2.responseText);
+                                    var translated = t.choices[0].message.content.trim().split('\n');
+                                    caps = rawSegs.map(function(s,i){return{start:s.start,end:s.end,text:(translated[i]||s.text).trim()};});
+                                }catch(e){caps=rawSegs.map(function(s){return{start:s.start,end:s.end,text:(s.text||'').trim()};});}
+                                console.log('[X] OK',caps.length);hide();showCaps();
+                            },
+                            onerror:function(){
+                                caps=rawSegs.map(function(s){return{start:s.start,end:s.end,text:(s.text||'').trim()};});
+                                hide();showCaps();
+                            }
+                        });
                     } else if(j.text){
                         caps=[{start:0,end:120,text:j.text.trim()}];hide();showCaps();
                     } else { sts('API err'); console.error('[X]',j); }
