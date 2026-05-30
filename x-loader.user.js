@@ -239,27 +239,40 @@
 
     // ── Inject caption settings into gear menu ──────────
     function watchGearMenu() {
-        var obs = new MutationObserver(function() {
-            var dlg = document.querySelector('[role="dialog"] menuitem');
-            if (dlg && !document.querySelector('[data-x-feature="gear-captions"]')) {
-                var items = dlg.parentElement || dlg.closest('[role="dialog"]');
-                if (!items) return;
-                var it = document.createElement('menuitem');
-                it.setAttribute('data-x-feature','gear-captions');
-                it.setAttribute('role','menuitem');
-                it.style.cssText='display:flex;align-items:center;padding:10px 12px;cursor:pointer;color:#fff;font:13px/1.4 sans-serif;border-top:1px solid #333;';
-                it.innerHTML = '<span style="margin-right:6px;">⚙</span> Captions';
-                it.onclick = function() {
-                    var cc = document.querySelector('[data-x-feature="cc"]');
-                    if (cc) openSett(cc);
-                    // Close the gear menu
-                    var esc = new KeyboardEvent('keydown', {key:'Escape', bubbles:true});
-                    document.dispatchEvent(esc);
-                };
-                items.appendChild(it);
+        // Patch the gear button to inject captions option when menu opens
+        setInterval(function() {
+            var gear = document.querySelector('[aria-label="Video Settings"]');
+            if (gear && !gear._patched) {
+                gear._patched = true;
+                var origClick = gear.onclick || (function(){});
+                gear.addEventListener('click', function() {
+                    setTimeout(function() {
+                        // Find the menu - look for elements containing "Playback speed"
+                        var all = document.querySelectorAll('div, span, [role="button"]');
+                        var menu = null;
+                        for (var i=0; i<all.length; i++) {
+                            if (all[i].textContent && all[i].textContent.indexOf('Playback speed') > -1) {
+                                menu = all[i].parentElement || all[i].closest('[role="dialog"], [role="menu"], div[style*="position"]');
+                                break;
+                            }
+                        }
+                        if (menu && !document.querySelector('[data-x-feature="gear-captions"]')) {
+                            var it = document.createElement('div');
+                            it.setAttribute('data-x-feature','gear-captions');
+                            it.style.cssText = 'display:flex;align-items:center;padding:10px 12px;cursor:pointer;color:#fff;font:13px/1.4 sans-serif;border-top:1px solid #333;';
+                            it.innerHTML = '<span style="margin-right:6px;"></span> Captions';
+                            it.onclick = function() {
+                                var cc = document.querySelector('[data-x-feature="cc"]');
+                                if (cc) openSett(cc);
+                                // Close menu
+                                document.body.click();
+                            };
+                            menu.appendChild(it);
+                        }
+                    }, 100);
+                });
             }
-        });
-        obs.observe(document.body, {childList:true, subtree:true});
+        }, 2000);
     }
     function inj(pl){
         if(pl.querySelector('[data-x-feature="cc"]'))return;
