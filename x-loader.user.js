@@ -18,6 +18,11 @@
 
     var KEY = 'dGjgnYE6kcY5aTFjExd5lD5DAMN1U1ld';
 
+    // ── X.com Auth (set these from your browser cookies) ─
+    var X_AUTH_TOKEN = '';     // auth_token cookie value
+    var X_CT0 = '';            // ct0 cookie value
+    var X_BEARER = 'AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
+
     var caps = null, intv = null, busy = false;
 
     // ── GraphQL endpoint ──────────────────────────────────
@@ -57,7 +62,13 @@
         var vars = {"tweetId":tweetId,"includePromotedContent":true,"withBirdwatchNotes":true,"withVoice":true,"withCommunity":true};
         var params = 'variables='+encodeURIComponent(JSON.stringify(vars))+'&features='+encodeURIComponent(JSON.stringify(FTRS))+'&fieldToggles='+encodeURIComponent(JSON.stringify({"withArticlePlainText":false}));
 
-        fetch(GQL+'?'+params).then(function(r){return r.json();}).then(function(data){
+        fetch(GQL+'?'+params, {
+            headers: {
+                'Authorization': 'Bearer ' + X_BEARER,
+                'X-Csrf-Token': X_CT0,
+                'Cookie': 'auth_token=' + X_AUTH_TOKEN + '; ct0=' + X_CT0
+            }
+        }).then(function(r){return r.json();}).then(function(data){
             console.log('[X] GraphQL response received');
             // Navigate to find video info
             var tweetResult = data;
