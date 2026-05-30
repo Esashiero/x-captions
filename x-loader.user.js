@@ -60,6 +60,78 @@
     // ── UI ────────────────────────────────────────────────
     var SVG = '<svg viewBox="0 0 24 24" aria-hidden="true" class="r-4qtqp9 r-yyyyoo r-dnmrzs r-bnwqim r-lrvibr r-m6rgpd r-z80fyv r-19wmn03"><g><path d="M9.007 8.785c1.26 0 2.075.53 2.62 1.29l-1.207.935c-.306-.42-.799-.695-1.357-.695-.93 0-1.684.754-1.684 1.684 0 .93.755 1.684 1.684 1.684.578 0 1.087-.292 1.39-.735l1.22.87c-.582.802-1.367 1.394-2.736 1.394h-.002l-.002.003c-1.766 0-3.187-1.35-3.187-3.187s1.421-3.186 3.187-3.186zm7.602 0c1.26 0 2.075.53 2.62 1.29l-1.207.935c-.306-.42-.799-.695-1.357-.695-.93 0-1.684.754-1.684 1.684 0 .93.755 1.684 1.684 1.684.578 0 1.087-.292 1.39-.735l1.22.87c-.582.802-1.367 1.394-2.736 1.394h-.002l-.002.003c-1.766 0-3.187-1.35-3.187-3.187s1.421-3.186 3.187-3.186z"></path></g></svg>';
 
+    // Settings (persisted in localStorage)
+    var SETTINGS_KEY = 'x_captions_settings';
+    var settings = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{"bg":"rgba(0,0,0,0.85)","size":"15","lang":"en"}');
+
+    // Controls hover state
+    var _controlsVisible = true;
+    var _hideTimer = null;
+
+    function setupHoverTracking(player) {
+        player.addEventListener('mouseenter', function() {
+            _controlsVisible = true;
+            if (_hideTimer) clearTimeout(_hideTimer);
+            updateCaptionPosition();
+        });
+        player.addEventListener('mouseleave', function() {
+            _controlsVisible = false;
+            updateCaptionPosition();
+        });
+        // Also reset on mousemove
+        player.addEventListener('mousemove', function() {
+            _controlsVisible = true;
+            if (_hideTimer) clearTimeout(_hideTimer);
+            _hideTimer = setTimeout(function() { _controlsVisible = false; updateCaptionPosition(); }, 3000);
+            updateCaptionPosition();
+        });
+    }
+
+    function updateCaptionPosition() {
+        var els = document.querySelectorAll('[data-x-feature="co"]');
+        for (var i=0; i<els.length; i++) {
+            els[i].style.bottom = _controlsVisible ? '52px' : '8px';
+        }
+    }
+
+    function openSettings(e) {
+        e.stopPropagation();
+        e.preventDefault();
+        var p = vp(); if (!p) return;
+        // Build settings panel
+        var panel = document.createElement('div');
+        panel.setAttribute('data-x-feature','settings');
+        panel.style.cssText = 'position:absolute;bottom:60px;right:10px;background:rgba(0,0,0,0.9);color:#fff;padding:12px;border-radius:8px;z-index:99999;font:13px/1.5 sans-serif;min-width:200px;';
+        panel.innerHTML = '<div style="font-weight:bold;margin-bottom:8px;font-size:14px;">Caption Settings</div>'+
+            '<label style="display:block;margin:4px 0;">BG Color: <input id="xcs-bg" value="'+settings.bg+'" style="width:80px;background:#333;color:#fff;border:1px solid #555;border-radius:3px;padding:2px 4px;"></label>'+
+            '<label style="display:block;margin:4px 0;">Size: <input id="xcs-size" type="number" value="'+settings.size+'" min="10" max="30" style="width:50px;background:#333;color:#fff;border:1px solid #555;border-radius:3px;padding:2px 4px;">px</label>'+
+            '<label style="display:block;margin:4px 0;">Language: <select id="xcs-lang" style="background:#333;color:#fff;border:1px solid #555;border-radius:3px;padding:2px 4px;">'+
+            '<option value="en"'+(settings.lang==='en'?' selected':'')+'>English</option>'+
+            '<option value="fr"'+(settings.lang==='fr'?' selected':'')+'>French</option>'+
+            '<option value="es"'+(settings.lang==='es'?' selected':'')+'>Spanish</option>'+
+            '<option value="de"'+(settings.lang==='de'?' selected':'')+'>German</option>'+
+            '<option value="ja"'+(settings.lang==='ja'?' selected':'')+'>Japanese</option>'+
+            '<option value="original"'+(settings.lang==='original'?' selected':'')+'>Original</option>'+
+            '</select></label>'+
+            '<div style="margin-top:8px;display:flex;gap:4px;">'+
+            '<button id="xcs-save" style="flex:1;background:#1d9bf0;color:#fff;border:none;border-radius:4px;padding:4px 8px;cursor:pointer;">Save</button>'+
+            '<button id="xcs-close" style="background:#555;color:#fff;border:none;border-radius:4px;padding:4px 8px;cursor:pointer;">Close</button></div>';
+        var vc = p.querySelector('[data-testid="videoComponent"]');
+        if (vc) vc.appendChild(panel);
+
+        document.getElementById('xcs-save').onclick = function() {
+            settings.bg = document.getElementById('xcs-bg').value;
+            settings.size = document.getElementById('xcs-size').value;
+            settings.lang = document.getElementById('xcs-lang').value;
+            localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+            // Update existing captions
+            var ct = document.getElementById('ct');
+            if (ct) ct.style.cssText = 'display:inline-block;background:'+settings.bg+';color:#fff;padding:8px 16px;border-radius:6px;font:'+settings.size+'px/1.5 sans-serif;max-width:85%;text-align:center;';
+            panel.remove();
+        };
+        document.getElementById('xcs-close').onclick = function() { panel.remove(); };
+    }
+
     function mk() {
         var w = document.createElement('div'); w.className='css-175oi2r'; w.setAttribute('data-x-feature','cc'); w.setAttribute('data-on','0');
         var b = document.createElement('button'); b.setAttribute('aria-label','AI Captions'); b.setAttribute('role','button');
@@ -67,7 +139,10 @@
         b.style.cssText='background:transparent;border-color:transparent;opacity:.5';
         var n=document.createElement('div'); n.dir='ltr'; n.className='css-146c3p1 r-qvutc0 r-1qd0xha r-q4m81j r-a023e6 r-rjixqe r-b88u0q r-1awozwy r-6koalj r-18u37iz r-16y2uox r-bcqeeo r-1777fci';
         n.style.cssText='color:#fff'; n.innerHTML=SVG;
-        b.appendChild(n); b.onclick=function(e){e.stopPropagation();on(w);}; w.appendChild(b); return w;
+        b.appendChild(n);
+        b.onclick=function(e){e.stopPropagation();on(w);};
+        b.ondblclick=function(e){openSettings(e);};
+        w.appendChild(b); return w;
     }
     function vp(){var w=document.querySelector('[data-x-feature="cc"][data-on="1"]')||document.querySelector('[data-x-feature="cc"]');if(!w)return document.querySelector('[data-testid="videoPlayer"]');return w.closest('[data-testid="videoPlayer"]');}
     function on(w){
@@ -130,11 +205,21 @@
     }
 
     // ── Display ───────────────────────────────────────────
-    function sts(msg){var p=vp();if(!p)return;rip(p);var o=document.createElement('div');o.setAttribute('data-x-feature','co');o.style.cssText='position:absolute;bottom:60px;left:0;right:0;text-align:center;padding:8px 16px;z-index:9999;pointer-events:none;';var t=document.createElement('div');t.style.cssText='display:inline-block;background:rgba(0,0,0,.75);color:#fff;padding:6px 14px;border-radius:6px;font:14px/1.4 sans-serif;max-width:80%;';t.textContent=msg;o.appendChild(t);var vc=p.querySelector('[data-testid="videoComponent"]');if(vc)vc.appendChild(o);}
+    function sts(msg){
+        var p=vp();if(!p)return;rip(p);
+        var o=document.createElement('div');o.setAttribute('data-x-feature','co');
+        o.style.cssText='position:absolute;bottom:'+(_controlsVisible?'52px':'8px')+';left:0;right:0;text-align:center;padding:8px 16px;z-index:9999;pointer-events:none;';
+        var t=document.createElement('div');
+        t.style.cssText='display:inline-block;background:rgba(0,0,0,.75);color:#fff;padding:6px 14px;border-radius:6px;font:14px/1.4 sans-serif;max-width:80%;';
+        t.textContent=msg;o.appendChild(t);
+        var vc=p.querySelector('[data-testid="videoComponent"]');if(vc)vc.appendChild(o);
+    }
     function showCaps(){
         if(!caps)return;var p=vp();if(!p)return;var v=p.querySelector('video');if(!v)return;
-        rip(p);var o=document.createElement('div');o.setAttribute('data-x-feature','co');o.style.cssText='position:absolute;bottom:60px;left:0;right:0;text-align:center;padding:8px 16px;z-index:9999;pointer-events:none;';
-        var t=document.createElement('div');t.id='ct';t.style.cssText='display:inline-block;background:rgba(0,0,0,.85);color:#fff;padding:8px 16px;border-radius:6px;font:15px/1.5 sans-serif;max-width:85%;text-align:center;';
+        rip(p);var o=document.createElement('div');o.setAttribute('data-x-feature','co');
+        o.style.cssText='position:absolute;bottom:'+(_controlsVisible?'52px':'8px')+';left:0;right:0;text-align:center;padding:8px 16px;z-index:9999;pointer-events:none;';
+        var t=document.createElement('div');t.id='ct';
+        t.style.cssText='display:inline-block;background:'+settings.bg+';color:#fff;padding:8px 16px;border-radius:6px;font:'+settings.size+'px/1.5 sans-serif;max-width:85%;text-align:center;';
         var c=v.currentTime;for(var i=0;i<caps.length;i++){if(c>=caps[i].start&&c<caps[i].end){t.textContent=caps[i].text;break;}}
         o.appendChild(t);var vc=p.querySelector('[data-testid="videoComponent"]');if(vc)vc.appendChild(o);
         if(intv)clearInterval(intv);intv=setInterval(function(){if(!v)return;var c=v.currentTime,f='';for(var i=0;i<caps.length;i++){if(c>=caps[i].start&&c<caps[i].end){f=caps[i].text;break;}}t.textContent=f;},200);
@@ -148,6 +233,7 @@
         if(pl.querySelector('[data-testid="captions"]'))return;
         var u=pl.querySelector('[aria-label="Unmute"]')||pl.querySelector('[aria-label="Mute"]');
         if(!u)return;var w=u.parentElement;if(!w)return;var c=w.parentElement;if(!c)return;
+        setupHoverTracking(pl);
         c.insertBefore(mk(),w);
     }
     var rt=0;
