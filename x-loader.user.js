@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X.com AI Captions
 // @namespace    local.x-features
-// @version      6.6
+// @version      6.7
 // @description  AI captions for X videos via Mistral. No server.
 // @author       Hermes
 // @match        https://x.com/*
@@ -128,33 +128,20 @@
         if (!ref) return;
         var ci = ref.cloneNode(true);
         ci.setAttribute('data-x-feature', 'gc');
-        // Replace SVG with CC icon
+        // CC icon
         var svg = ci.querySelector('svg');
         if (svg) {
             svg.innerHTML = '<g><path d="M9.007 8.785c1.26 0 2.075.53 2.62 1.29l-1.207.935c-.306-.42-.799-.695-1.357-.695-.93 0-1.684.754-1.684 1.684 0 .93.755 1.684 1.684 1.684.578 0 1.087-.292 1.39-.735l1.22.87c-.582.802-1.367 1.394-2.736 1.394h-.002l-.002.003c-1.766 0-3.187-1.35-3.187-3.187s1.421-3.186 3.187-3.186zm7.602 0c1.26 0 2.075.53 2.62 1.29l-1.207.935c-.306-.42-.799-.695-1.357-.695-.93 0-1.684.754-1.684 1.684 0 .93.755 1.684 1.684 1.684.578 0 1.087-.292 1.39-.735l1.22.87c-.582.802-1.367 1.394-2.736 1.394h-.002l-.002.003c-1.766 0-3.187-1.35-3.187-3.187s1.421-3.186 3.187-3.186z"/></g>';
         }
-        // Clear all existing text nodes in the label area and set "Captions"
-        var label = ci.querySelector('[role="menuitem"] > div:last-child, .r-16y2uox');
-        if (!label) label = ci.querySelector('div:not(:has(svg))');
+        // Replace all text nodes inside the label area with "Captions"
+        var label = ci.querySelector('.r-16y2uox') || ci.children[1];
         if (label) {
-            // Walk text nodes and set all content
-            var walker = document.createTreeWalker(label, 4 /* NodeFilter.SHOW_TEXT */, null, false);
-            var nodes = [];
-            while (walker.nextNode()) nodes.push(walker.currentNode);
-            for (var ti=0; ti<nodes.length; ti++) {
-                if (ti === 0) nodes[ti].textContent = 'Captions';
-                else nodes[ti].textContent = '';
-            }
+            label.innerHTML = '<div dir="ltr" class="css-146c3p1 r-bcqeeo r-1ttztb7 r-qvutc0 r-1qd0xha r-a023e6 r-rjixqe r-b88u0q" style="color: rgb(231, 233, 234);"><span class="css-1jxf684 r-bcqeeo r-1ttztb7 r-qvutc0 r-poiln3">Captions</span></div>';
         }
         ci.onclick = function(e) {
             e.stopPropagation();
             e.preventDefault();
             openSett();
-            // Close the menu: click the backdrop
-            requestAnimationFrame(function(){
-                var backdrop = document.querySelector('[role="presentation"]');
-                if (backdrop) backdrop.click();
-            });
         };
         menu.appendChild(ci);
     }
@@ -166,14 +153,28 @@
                 for (var ai=0; ai<added.length; ai++) {
                     var n = added[ai];
                     if (n.nodeType !== 1) continue;
-                    // The menu may be the added node itself or a descendant
                     if (n.matches && n.matches('[role="menu"]')) { injectCaptionsItem(n); continue; }
+                    var menu = n.querySelector && n.querySelector('[role="menu"]');
+                    if (menu) injectCaptionsItem(menu);
+                }
+            }
+            // Also check again in case React async rendered more items after our clone
+            for (var mi=0; mi<ms.length; mi++) {
+                var added = ms[mi].addedNodes;
+                for (var ai=0; ai<added.length; ai++) {
+                    var n = added[ai];
+                    if (n.nodeType !== 1) continue;
                     var menu = n.querySelector && n.querySelector('[role="menu"]');
                     if (menu) injectCaptionsItem(menu);
                 }
             }
         });
         obs.observe(document.body, {childList:true, subtree:true});
+        // Polling fallback: check for menus every 500ms (handles React portal quirks)
+        setInterval(function(){
+            var menus = document.querySelectorAll('[role="menu"]');
+            for (var i=0; i<menus.length; i++) injectCaptionsItem(menus[i]);
+        }, 500);
     }
 
     // ── Settings panel ────────────────────────────────────
@@ -363,6 +364,6 @@
     }
     var rt=0;
     function tryGo(){var ps=document.querySelectorAll('[data-testid="videoPlayer"]');var ok=false;for(var i=0;i<ps.length;i++){inj(ps[i]);if(ps[i].querySelector('[data-x-feature="cc"]'))ok=true;}if(!ok&&rt<60){rt++;setTimeout(tryGo,500);}}
-    function init(){console.log('[X] v6.6');watchMenu();new MutationObserver(function(){var ps=document.querySelectorAll('[data-testid="videoPlayer"]');for(var i=0;i<ps.length;i++)inj(ps[i]);}).observe(document.body,{childList:true,subtree:true});tryGo();}
+    function init(){console.log('[X] v6.7');watchMenu();new MutationObserver(function(){var ps=document.querySelectorAll('[data-testid="videoPlayer"]');for(var i=0;i<ps.length;i++)inj(ps[i]);}).observe(document.body,{childList:true,subtree:true});tryGo();}
     if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
 })();
