@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X.com AI Captions
 // @namespace    local.x-features
-// @version      6.10
+// @version      6.11
 // @description  AI captions for X videos via Mistral. No server.
 // @author       Hermes
 // @match        https://x.com/*
@@ -29,12 +29,26 @@
 
     // ── Settings defaults ────────────────────────────────
     var SKEY = 'x_captions_settings';
-    var DEF = {bg:'rgba(0,0,0,0.85)', size:'15', lang:'en', provider:'mistral', model:'voxtral-mini-latest'};
+    var DEF = {bg:'#000000', bgOp:85, size:'15', lang:'en', provider:'mistral', model:'voxtral-mini-latest'};
     var s = JSON.parse(localStorage.getItem(SKEY) || JSON.stringify(DEF));
     if (!s.provider) s.provider = DEF.provider;
     if (!s.model) s.model = DEF.model;
+    if (s.bgOp === undefined) s.bgOp = DEF.bgOp;
+    // Migrate old rgba-in-bg to hex + bgOp
+    if (s.bg && s.bg.startsWith('rgba')) {
+        s.bg = DEF.bg;
+        s.bgOp = DEF.bgOp;
+    }
 
     var LANG_MAP = {'en':'English','fr':'French','es':'Spanish','de':'German','ja':'Japanese','original':'Original'};
+
+    function bgCSS() {
+        var c = s.bg, o = (s.bgOp === undefined ? 85 : s.bgOp) / 100;
+        var r = parseInt(c.slice(1,3),16) || 0;
+        var g = parseInt(c.slice(3,5),16) || 0;
+        var b = parseInt(c.slice(5,7),16) || 0;
+        return 'rgba('+r+','+g+','+b+','+o+')';
+    }
 
     // ── Intercept XHR ────────────────────────────────────
     var W = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
@@ -187,6 +201,10 @@
             '<div style="display:flex;gap:6px;margin-top:2px;">'+
             '<input type="color" id="xcs-bg-picker" value="'+(s.bg.startsWith('#')?s.bg:'#000000')+'" style="width:36px;height:30px;padding:0;border:1px solid #555;border-radius:4px;background:transparent;cursor:pointer;">'+
             '<input id="xcs-bg" value="'+s.bg+'" style="flex:1;background:#222;color:#fff;border:1px solid #555;border-radius:4px;padding:4px 6px;font:12px monospace;"></div></div>'+
+            '<div style="margin:6px 0;"><label style="display:block;color:#aaa;font-size:11px;">OPACITY</label>'+
+            '<div style="display:flex;gap:6px;margin-top:2px;align-items:center;">'+
+            '<input id="xcs-op" type="range" min="10" max="100" value="'+(s.bgOp||85)+'" style="flex:1;margin:0;">'+
+            '<span id="xcs-op-val" style="font-size:11px;color:#aaa;min-width:28px;text-align:right;">'+(s.bgOp||85)+'%</span></div></div>'+
             '<div style="margin:6px 0;"><label style="display:block;color:#aaa;font-size:11px;">FONT SIZE</label>'+
             '<input id="xcs-size" type="range" min="10" max="30" value="'+s.size+'" style="width:100%;margin:2px 0;">'+
             '<span id="xcs-size-val" style="font-size:11px;color:#aaa;">'+s.size+'px</span></div>'+
@@ -222,16 +240,20 @@
         document.getElementById('xcs-bg-picker').oninput = function() {
             document.getElementById('xcs-bg').value = this.value;
         };
+        document.getElementById('xcs-op').oninput = function() {
+            document.getElementById('xcs-op-val').textContent = this.value + '%';
+        };
 
         document.getElementById('xcs-save').onclick = function() {
             s.provider = document.getElementById('xcs-provider').value || DEF.provider;
             s.model = document.getElementById('xcs-model').value || DEF.model;
             s.bg = document.getElementById('xcs-bg').value || DEF.bg;
+            s.bgOp = parseInt(document.getElementById('xcs-op').value) || DEF.bgOp;
             s.size = document.getElementById('xcs-size').value || DEF.size;
             s.lang = document.getElementById('xcs-lang').value || 'en';
             localStorage.setItem(SKEY, JSON.stringify(s));
             var ct = document.getElementById('ct');
-            if (ct) ct.style.cssText = 'display:inline-block;background:'+s.bg+';color:#fff;padding:8px 16px;border-radius:6px;font:'+s.size+'px/1.5 sans-serif;max-width:85%;text-align:center;';
+            if (ct) ct.style.cssText = 'display:inline-block;background:'+bgCSS()+';color:#fff;padding:8px 16px;border-radius:6px;font:'+s.size+'px/1.5 sans-serif;max-width:85%;text-align:center;';
             if (pan.parentNode) pan.remove();
         };
         document.getElementById('xcs-close').onclick = function() { if (pan.parentNode) pan.remove(); };
@@ -323,7 +345,7 @@
         rip(p);var o=document.createElement('div');o.setAttribute('data-x-feature','co');
         o.style.cssText='position:absolute;bottom:'+ctrlBottom()+';left:0;right:0;text-align:center;padding:8px 16px;z-index:9999;pointer-events:none;';
         var t=document.createElement('div');t.id='ct';
-        t.style.cssText='display:inline-block;background:'+s.bg+';color:#fff;padding:8px 16px;border-radius:6px;font:'+s.size+'px/1.5 sans-serif;max-width:85%;text-align:center;';
+        t.style.cssText='display:inline-block;background:'+bgCSS()+';color:#fff;padding:8px 16px;border-radius:6px;font:'+s.size+'px/1.5 sans-serif;max-width:85%;text-align:center;';
         var c=v.currentTime;for(var i=0;i<caps.length;i++){if(c>=caps[i].start&&c<caps[i].end){t.textContent=caps[i].text;break;}}
         o.appendChild(t);var vc=p.querySelector('[data-testid="videoComponent"]');if(vc)vc.appendChild(o);
         if(intv)clearInterval(intv);intv=setInterval(function(){if(!v)return;var c=v.currentTime,f='';for(var i=0;i<caps.length;i++){if(c>=caps[i].start&&c<caps[i].end){f=caps[i].text;break;}}t.textContent=f;},200);
@@ -342,6 +364,6 @@
     }
     var rt=0;
     function tryGo(){var ps=document.querySelectorAll('[data-testid="videoPlayer"]');var ok=false;for(var i=0;i<ps.length;i++){inj(ps[i]);if(ps[i].querySelector('[data-x-feature="cc"]'))ok=true;}if(!ok&&rt<60){rt++;setTimeout(tryGo,500);}}
-    function init(){console.log('[X] v6.10');watchMenu();new MutationObserver(function(){var ps=document.querySelectorAll('[data-testid="videoPlayer"]');for(var i=0;i<ps.length;i++)inj(ps[i]);}).observe(document.body,{childList:true,subtree:true});tryGo();}
+    function init(){console.log('[X] v6.11');watchMenu();new MutationObserver(function(){var ps=document.querySelectorAll('[data-testid="videoPlayer"]');for(var i=0;i<ps.length;i++)inj(ps[i]);}).observe(document.body,{childList:true,subtree:true});tryGo();}
     if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
 })();
