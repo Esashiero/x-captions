@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X.com AI Captions
 // @namespace    local.x-features
-// @version      6.7
+// @version      6.8
 // @description  AI captions for X videos via Mistral. No server.
 // @author       Hermes
 // @match        https://x.com/*
@@ -122,59 +122,31 @@
     }
 
     // ── Inject into gear menu ────────────────────────────
-    function injectCaptionsItem(menu) {
-        if (menu.querySelector('[data-x-feature="gc"]')) return;
-        var ref = menu.querySelector('[role="menuitem"]');
+    function injMenu() {
+        var mc = document.querySelector('.css-175oi2r.r-1867qdf.r-eqz5dr.r-iphfwy.r-o59np7.r-qjj4hq.r-tskmnb');
+        if (!mc || mc.querySelector('[data-x-gc]')) return;
+        var ref = mc.children[0];
         if (!ref) return;
         var ci = ref.cloneNode(true);
-        ci.setAttribute('data-x-feature', 'gc');
-        // CC icon
+        ci.setAttribute('data-x-gc', '1');
         var svg = ci.querySelector('svg');
-        if (svg) {
-            svg.innerHTML = '<g><path d="M9.007 8.785c1.26 0 2.075.53 2.62 1.29l-1.207.935c-.306-.42-.799-.695-1.357-.695-.93 0-1.684.754-1.684 1.684 0 .93.755 1.684 1.684 1.684.578 0 1.087-.292 1.39-.735l1.22.87c-.582.802-1.367 1.394-2.736 1.394h-.002l-.002.003c-1.766 0-3.187-1.35-3.187-3.187s1.421-3.186 3.187-3.186zm7.602 0c1.26 0 2.075.53 2.62 1.29l-1.207.935c-.306-.42-.799-.695-1.357-.695-.93 0-1.684.754-1.684 1.684 0 .93.755 1.684 1.684 1.684.578 0 1.087-.292 1.39-.735l1.22.87c-.582.802-1.367 1.394-2.736 1.394h-.002l-.002.003c-1.766 0-3.187-1.35-3.187-3.187s1.421-3.186 3.187-3.186z"/></g>';
-        }
-        // Replace all text nodes inside the label area with "Captions"
-        var label = ci.querySelector('.r-16y2uox') || ci.children[1];
-        if (label) {
-            label.innerHTML = '<div dir="ltr" class="css-146c3p1 r-bcqeeo r-1ttztb7 r-qvutc0 r-1qd0xha r-a023e6 r-rjixqe r-b88u0q" style="color: rgb(231, 233, 234);"><span class="css-1jxf684 r-bcqeeo r-1ttztb7 r-qvutc0 r-poiln3">Captions</span></div>';
-        }
+        if (svg) svg.innerHTML = '<g><path d="M9.007 8.785c1.26 0 2.075.53 2.62 1.29l-1.207.935c-.306-.42-.799-.695-1.357-.695-.93 0-1.684.754-1.684 1.684 0 .93.755 1.684 1.684 1.684.578 0 1.087-.292 1.39-.735l1.22.87c-.582.802-1.367 1.394-2.736 1.394h-.002l-.002.003c-1.766 0-3.187-1.35-3.187-3.187s1.421-3.186 3.187-3.186zm7.602 0c1.26 0 2.075.53 2.62 1.29l-1.207.935c-.306-.42-.799-.695-1.357-.695-.93 0-1.684.754-1.684 1.684 0 .93.755 1.684 1.684 1.684.578 0 1.087-.292 1.39-.735l1.22.87c-.582.802-1.367 1.394-2.736 1.394h-.002l-.002.003c-1.766 0-3.187-1.35-3.187-3.187s1.421-3.186 3.187-3.186z"/></g>';
+        var ts = ci.querySelector('span span');
+        if (ts) ts.textContent = 'Captions';
+        var vs = ci.querySelector('.r-16dba41 span');
+        if (vs) vs.textContent = '';
         ci.onclick = function(e) {
             e.stopPropagation();
             e.preventDefault();
             openSett();
         };
-        menu.appendChild(ci);
+        mc.appendChild(ci);
     }
 
     function watchMenu() {
-        var obs = new MutationObserver(function(ms) {
-            for (var mi=0; mi<ms.length; mi++) {
-                var added = ms[mi].addedNodes;
-                for (var ai=0; ai<added.length; ai++) {
-                    var n = added[ai];
-                    if (n.nodeType !== 1) continue;
-                    if (n.matches && n.matches('[role="menu"]')) { injectCaptionsItem(n); continue; }
-                    var menu = n.querySelector && n.querySelector('[role="menu"]');
-                    if (menu) injectCaptionsItem(menu);
-                }
-            }
-            // Also check again in case React async rendered more items after our clone
-            for (var mi=0; mi<ms.length; mi++) {
-                var added = ms[mi].addedNodes;
-                for (var ai=0; ai<added.length; ai++) {
-                    var n = added[ai];
-                    if (n.nodeType !== 1) continue;
-                    var menu = n.querySelector && n.querySelector('[role="menu"]');
-                    if (menu) injectCaptionsItem(menu);
-                }
-            }
-        });
-        obs.observe(document.body, {childList:true, subtree:true});
-        // Polling fallback: check for menus every 500ms (handles React portal quirks)
-        setInterval(function(){
-            var menus = document.querySelectorAll('[role="menu"]');
-            for (var i=0; i<menus.length; i++) injectCaptionsItem(menus[i]);
-        }, 500);
+        new MutationObserver(function() { injMenu(); })
+            .observe(document.body, {childList:true, subtree:true});
+        injMenu();
     }
 
     // ── Settings panel ────────────────────────────────────
@@ -364,6 +336,6 @@
     }
     var rt=0;
     function tryGo(){var ps=document.querySelectorAll('[data-testid="videoPlayer"]');var ok=false;for(var i=0;i<ps.length;i++){inj(ps[i]);if(ps[i].querySelector('[data-x-feature="cc"]'))ok=true;}if(!ok&&rt<60){rt++;setTimeout(tryGo,500);}}
-    function init(){console.log('[X] v6.7');watchMenu();new MutationObserver(function(){var ps=document.querySelectorAll('[data-testid="videoPlayer"]');for(var i=0;i<ps.length;i++)inj(ps[i]);}).observe(document.body,{childList:true,subtree:true});tryGo();}
+    function init(){console.log('[X] v6.8');watchMenu();new MutationObserver(function(){var ps=document.querySelectorAll('[data-testid="videoPlayer"]');for(var i=0;i<ps.length;i++)inj(ps[i]);}).observe(document.body,{childList:true,subtree:true});tryGo();}
     if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
 })();
