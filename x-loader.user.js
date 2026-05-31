@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X.com AI Captions
 // @namespace    local.x-features
-// @version      7.3
+// @version      7.4
 // @description  AI captions for X/Twitter videos. No server needed.
 // @author       Hermes
 // @match        https://x.com/*
@@ -65,7 +65,84 @@
         return 'rgba('+r+','+g+','+b+','+o+')';
     }
 
-    // ── Intercept XHR + Fetch (capture MP4 URL per tweet ID) ──
+    // ── Capture video URL from <video> elements in the DOM ──
+    // This is the only CSP-safe approach: X.com's CSP has a nonce directive
+    // which ignores 'unsafe-inline', blocking all injected JS (scripts, eval,
+    // javascript: links, unsafeWindow.fetch assignment).
+    // Instead we observe <video> elements and read their src/currentSrc.
+
+    function watchVideoElement(video) {
+        if (video._xcv) return;
+        video._xcv = true;
+
+        function extractUrl() {
+            var url = video.currentSrc || video.src || '';
+            // twimg video URLs: https://video.twimg.com/...
+            if (!url || url.indexOf('http') !== 0) return;
+            var tweetId = getTweetIdFromChild(video);
+            if (tweetId && !_videoUrls[tweetId]) {
+                _videoUrls[tweetId] = url;
+            }
+        }
+
+        video.addEventListener('loadedmetadata', extractUrl);
+        video.addEventListener('canplay', extractUrl);
+        // Poll src for 5s in case events don't fire (attribute-based setting)
+        var checkInt = setInterval(extractUrl, 300);
+        setTimeout(function() { clearInterval(checkInt); }, 5000);
+        // Fire immediately if video is already loaded
+        if (video.readyState >= 1) setTimeout(extractUrl, 100);
+    }
+
+    // Walk UP from the video element to find the tweet ID
+    function getTweetIdFromChild(el) {
+        var art = el.closest('article[data-testid="tweet"]');
+        if (!art) {
+            // Some videos are in overlay/lightbox — try a broader search
+            art = el.closest('[data-testid="tweet"]');
+        }
+        if (!art) return null;
+        var links = art.querySelectorAll('a[href*="/status/"]');
+        for (var i = 0; i < links.length; i++) {
+            var m = links[i].href.match(/\/status\/(\d+)/);
+            if (m) return m[1];
+        }
+        return null;
+    }
+
+    // Watch for <video> elements appearing in the DOM
+    function startVideoWatcher() {
+        var obs = new MutationObserver(function(muts) {
+            for (var m = 0; m < muts.length; m++) {
+                var nodes = muts[m].addedNodes;
+                for (var n = 0; n < nodes.length; n++) {
+                    var node = nodes[n];
+                    if (node.nodeName === 'VIDEO') {
+                        watchVideoElement(node);
+                    } else if (node.querySelectorAll) {
+                        var vids = node.querySelectorAll('video');
+                        for (var v = 0; v < vids.length; v++) watchVideoElement(vids[v]);
+                    }
+                }
+            }
+        });
+        obs.observe(document.body, { childList: true, subtree: true });
+        // Background scan every 3s to catch lazy-loaded video src changes
+        setInterval(function() {
+            var vids = document.querySelectorAll('video');
+            for (var v = 0; v < vids.length; v++) {
+                var url = vids[v].currentSrc || vids[v].src || '';
+                if (url && url.indexOf('http') === 0) {
+                    var tid = getTweetIdFromChild(vids[v]);
+                    if (tid && !_videoUrls[tid]) {
+                        _videoUrls[tid] = url;
+                    }
+                }
+            }
+        }, 3000);
+    }
+
+    // Also keep the XHR interceptor as a secondary path (some X.com parts still use XHR)
     var W = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
     var ox = W.XMLHttpRequest.prototype.open;
     W.XMLHttpRequest.prototype.open = function(m, u) {
@@ -93,30 +170,30 @@
         return os.apply(this, arguments);
     };
 
-    // Inject fetch interceptor into page context.
-    // Tampermonkey's isolated world blocks unsafeWindow.fetch assignments
-    // and <script> elements added to the DOM may not execute.
-    // Use location.href = 'javascript:...' which runs in the page context.
-    try {
-        var injCode = 'var of=fetch;if(of&&!fetch.toString().match(/TweetResultByRestId/)){fetch=function(u,o){var us=typeof u==="string"?u:(u&&u.url?u.url:"");if(us.indexOf("TweetResultByRestId")>-1){var tid=null,tm=us.match(/tweetId[%22:]+(\\d+)/);if(tm)tid=tm[1];return of.call(this,u,o).then(function(r){r.clone().json().then(function(d){try{var res=d.data&&d.data.tweetResult&&d.data.tweetResult.result;if(!res)return;if(res.__typename==="TweetWithVisibilityResults")res=res.tweet;if(!tid&&res.legacy&&res.legacy.conversation_id_str)tid=res.legacy.conversation_id_str;if(!tid)return;var m=res.legacy&&res.legacy.extended_entities&&res.legacy.extended_entities.media;if(!m)return;var best=null,br=-1;for(var i=0;i<m.length;i++){if(m[i].type!=="video"&&m[i].type!=="animated_gif")continue;var v=m[i].video_info&&m[i].video_info.variants;if(!v)continue;for(var j=0;j<v.length;j++){if(v[j].content_type==="video/mp4"&&(v[j].bitrate||0)>br){best=v[j].url;br=v[j].bitrate||0;}}}if(best)window.__xcv(tid,best);}catch(e){}}).catch(function(){});return r;});}return of.call(this,u,o);};window.__xcvQueue=window.__xcvQueue||[];window.__xcv=function(id,url){__xcvQueue.push({id:id,url:url});};}';
-        var a = document.createElement('a');
-        a.href = 'javascript:' + encodeURIComponent(injCode);
-        a.style.display = 'none';
-        document.documentElement.appendChild(a);
-        a.click();
-        a.remove();
-    } catch(e) {}
-
-    // Poll the __xcvQueue from page context and drain into _videoUrls
-    setInterval(function() {
-        if (window.__xcvQueue && window.__xcvQueue.length) {
-            for (var i = 0; i < window.__xcvQueue.length; i++) {
-                var item = window.__xcvQueue[i];
-                _videoUrls[item.id] = item.url;
+    // captureVideoUrl: extract best MP4 from GraphQL data, store in _videoUrls
+    function captureVideoUrl(d, tweetId) {
+        if (!tweetId) return;
+        try {
+            var res = d.data && d.data.tweetResult && d.data.tweetResult.result;
+            if (!res) return;
+            if (res.__typename === 'TweetWithVisibilityResults') res = res.tweet;
+            if (!res.legacy || !res.legacy.extended_entities) return;
+            var media = res.legacy.extended_entities.media;
+            if (!media) return;
+            var best = null, br = -1;
+            for (var i = 0; i < media.length; i++) {
+                if (media[i].type !== 'video' && media[i].type !== 'animated_gif') continue;
+                var v = media[i].video_info && media[i].video_info.variants;
+                if (!v) continue;
+                for (var j = 0; j < v.length; j++) {
+                    if (v[j].content_type === 'video/mp4' && (v[j].bitrate || 0) > br) {
+                        best = v[j].url; br = v[j].bitrate || 0;
+                    }
+                }
             }
-            window.__xcvQueue = [];
-        }
-    }, 500);
+            if (best) _videoUrls[tweetId] = best;
+        } catch(e) {}
+    }
 
     // ── Get tweet ID from DOM for a video player ────────
     function getTweetId(player) {
@@ -493,6 +570,10 @@
             document.head.appendChild(st);
         }
         watchMenu();
+        startVideoWatcher();
+        // Also catch any videos already in the DOM
+        var existingVids = document.querySelectorAll('video');
+        for (var v = 0; v < existingVids.length; v++) watchVideoElement(existingVids[v]);
         new MutationObserver(function(){var ps=document.querySelectorAll('[data-testid="videoPlayer"]');for(var i=0;i<ps.length;i++)inject(ps[i]);}).observe(document.body,{childList:true,subtree:true});
         tryGo();
     }
