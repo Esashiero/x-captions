@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name         X.com AI Captions
 // @namespace    local.x-features
-// @version      7.4
+// @version      7.5
 // @description  AI captions for X/Twitter videos. No server needed.
 // @author       Hermes
 // @match        https://x.com/*
 // @match        https://twitter.com/*
 // @grant        GM_xmlhttpRequest
+// @grant        unsafeWindow
 // @connect      api.mistral.ai
 // @connect      *
 // @downloadURL  https://raw.githubusercontent.com/Esashiero/x-captions/main/x-loader.user.js
@@ -65,85 +66,83 @@
         return 'rgba('+r+','+g+','+b+','+o+')';
     }
 
-    // ── Capture video URL from <video> elements in the DOM ──
-    // This is the only CSP-safe approach: X.com's CSP has a nonce directive
-    // which ignores 'unsafe-inline', blocking all injected JS (scripts, eval,
-    // javascript: links, unsafeWindow.fetch assignment).
-    // Instead we observe <video> elements and read their src/currentSrc.
+    // ── Capture video URL from GraphQL responses ─────────
+    // X.com now uses blob URLs for <video> elements (currentSrc = blob:https://x.com/...),
+    // so DOM-based src extraction won't give us the real MP4 URL.
+    // We must intercept the network requests to get the actual video URL.
+    //
+    // CSP note: X.com CSP has a nonce directive which makes 'unsafe-inline' a no-op,
+    // blocking script injection (<script>, javascript: links, eval). But
+    // Object.defineProperty on unsafeWindow is a JavaScript-level property
+    // redefinition — it creates an own property on the page's window that
+    // shadows Window.prototype.fetch. CSP does NOT block this because it's not
+    // inline script execution.
 
-    function watchVideoElement(video) {
-        if (video._xcv) return;
-        video._xcv = true;
-
-        function extractUrl() {
-            var url = video.currentSrc || video.src || '';
-            // twimg video URLs: https://video.twimg.com/...
-            if (!url || url.indexOf('http') !== 0) return;
-            var tweetId = getTweetIdFromChild(video);
-            if (tweetId && !_videoUrls[tweetId]) {
-                _videoUrls[tweetId] = url;
-            }
-        }
-
-        video.addEventListener('loadedmetadata', extractUrl);
-        video.addEventListener('canplay', extractUrl);
-        // Poll src for 5s in case events don't fire (attribute-based setting)
-        var checkInt = setInterval(extractUrl, 300);
-        setTimeout(function() { clearInterval(checkInt); }, 5000);
-        // Fire immediately if video is already loaded
-        if (video.readyState >= 1) setTimeout(extractUrl, 100);
-    }
-
-    // Walk UP from the video element to find the tweet ID
-    function getTweetIdFromChild(el) {
-        var art = el.closest('article[data-testid="tweet"]');
-        if (!art) {
-            // Some videos are in overlay/lightbox — try a broader search
-            art = el.closest('[data-testid="tweet"]');
-        }
-        if (!art) return null;
-        var links = art.querySelectorAll('a[href*="/status/"]');
-        for (var i = 0; i < links.length; i++) {
-            var m = links[i].href.match(/\/status\/(\d+)/);
-            if (m) return m[1];
-        }
-        return null;
-    }
-
-    // Watch for <video> elements appearing in the DOM
-    function startVideoWatcher() {
-        var obs = new MutationObserver(function(muts) {
-            for (var m = 0; m < muts.length; m++) {
-                var nodes = muts[m].addedNodes;
-                for (var n = 0; n < nodes.length; n++) {
-                    var node = nodes[n];
-                    if (node.nodeName === 'VIDEO') {
-                        watchVideoElement(node);
-                    } else if (node.querySelectorAll) {
-                        var vids = node.querySelectorAll('video');
-                        for (var v = 0; v < vids.length; v++) watchVideoElement(vids[v]);
-                    }
-                }
-            }
-        });
-        obs.observe(document.body, { childList: true, subtree: true });
-        // Background scan every 3s to catch lazy-loaded video src changes
-        setInterval(function() {
-            var vids = document.querySelectorAll('video');
-            for (var v = 0; v < vids.length; v++) {
-                var url = vids[v].currentSrc || vids[v].src || '';
-                if (url && url.indexOf('http') === 0) {
-                    var tid = getTweetIdFromChild(vids[v]);
-                    if (tid && !_videoUrls[tid]) {
-                        _videoUrls[tid] = url;
-                    }
-                }
-            }
-        }, 3000);
-    }
-
-    // Also keep the XHR interceptor as a secondary path (some X.com parts still use XHR)
     var W = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+    var origFetch = W.fetch;
+
+    // Override fetch on the page's window via Object.defineProperty
+    // (bypasses Tampermonkey's proxy set trap for unsafeWindow)
+    function installFetchInterceptor() {
+        if (!origFetch) return;
+        try {
+            Object.defineProperty(W, 'fetch', {
+                value: function(u, opts) {
+                    var url = typeof u === 'string' ? u : (u && u.url ? u.url : '');
+                    var p = origFetch.call(this, u, opts);
+                    if (url && url.indexOf('TweetResultByRestId') > -1) {
+                        p.then(function(r) {
+                            if (!r || !r.clone || !r.ok) return;
+                            r.clone().json().then(function(d) {
+                                try {
+                                    var tid = null;
+                                    var tm = url.match(/tweetId[%22:]+(\d+)/);
+                                    if (tm) tid = tm[1];
+                                    var res = d.data && d.data.tweetResult && d.data.tweetResult.result;
+                                    if (!res) return;
+                                    if (res.__typename === 'TweetWithVisibilityResults') res = res.tweet;
+                                    if (!tid && res.legacy && res.legacy.conversation_id_str) tid = res.legacy.conversation_id_str;
+                                    if (!tid) return;
+                                    captureVideoUrl(d, tid);
+                                } catch(e) {}
+                            }).catch(function(){});
+                        }).catch(function(){});
+                    }
+                    return p;
+                },
+                writable: true,
+                configurable: true
+            });
+        } catch(e) {
+            // Object.defineProperty failed — try direct assignment (Firefox)
+            try { W.fetch = function(u, opts) {
+                var url = typeof u === 'string' ? u : (u && u.url ? u.url : '');
+                var p = origFetch.call(this, u, opts);
+                if (url && url.indexOf('TweetResultByRestId') > -1) {
+                    p.then(function(r) {
+                        if (!r || !r.clone || !r.ok) return;
+                        r.clone().json().then(function(d) {
+                            try {
+                                var tid = null;
+                                var tm = url.match(/tweetId[%22:]+(\d+)/);
+                                if (tm) tid = tm[1];
+                                var res = d.data && d.data.tweetResult && d.data.tweetResult.result;
+                                if (!res) return;
+                                if (res.__typename === 'TweetWithVisibilityResults') res = res.tweet;
+                                if (!tid && res.legacy && res.legacy.conversation_id_str) tid = res.legacy.conversation_id_str;
+                                if (!tid) return;
+                                captureVideoUrl(d, tid);
+                            } catch(e) {}
+                        }).catch(function(){});
+                    }).catch(function(){});
+                }
+                return p;
+            }; } catch(e2) {}
+        }
+    }
+    installFetchInterceptor();
+
+    // Also keep the XHR interceptor as a secondary path (some X.com API calls still use XHR)
     var ox = W.XMLHttpRequest.prototype.open;
     W.XMLHttpRequest.prototype.open = function(m, u) {
         this._xurl = typeof u === 'string' ? u : '';
@@ -159,10 +158,10 @@
             xhr.addEventListener('load', function() {
                 try {
                     var d = JSON.parse(xhr.responseText);
-                    var r = d.data && d.data.tweetResult && d.data.tweetResult.result;
-                    if (!r) return;
-                    if (r.__typename === 'TweetWithVisibilityResults') r = r.tweet;
-                    if (!tweetId && r.legacy && r.legacy.conversation_id_str) tweetId = r.legacy.conversation_id_str;
+                    var res = d.data && d.data.tweetResult && d.data.tweetResult.result;
+                    if (!res) return;
+                    if (res.__typename === 'TweetWithVisibilityResults') res = res.tweet;
+                    if (!tweetId && res.legacy && res.legacy.conversation_id_str) tweetId = res.legacy.conversation_id_str;
                     captureVideoUrl(d, tweetId);
                 } catch(e) {}
             });
@@ -570,10 +569,6 @@
             document.head.appendChild(st);
         }
         watchMenu();
-        startVideoWatcher();
-        // Also catch any videos already in the DOM
-        var existingVids = document.querySelectorAll('video');
-        for (var v = 0; v < existingVids.length; v++) watchVideoElement(existingVids[v]);
         new MutationObserver(function(){var ps=document.querySelectorAll('[data-testid="videoPlayer"]');for(var i=0;i<ps.length;i++)inject(ps[i]);}).observe(document.body,{childList:true,subtree:true});
         tryGo();
     }
