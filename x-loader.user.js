@@ -94,13 +94,17 @@
     };
 
     // Inject fetch interceptor into page context.
-    // Tampermonkey's isolated world prevents direct assignment to
-    // unsafeWindow.fetch from propagating. The <script> element approach
-    // also doesn't execute reliably. Use W.eval() which evaluates in
-    // the page's real JS execution context.
+    // Tampermonkey's isolated world blocks unsafeWindow.fetch assignments
+    // and <script> elements added to the DOM may not execute.
+    // Use location.href = 'javascript:...' which runs in the page context.
     try {
-        var injCode = '(function(){var of=window.fetch;if(!of)return;window.fetch=function(url,opts){var us=typeof url==="string"?url:(url&&url.url?url.url:"");if(us.indexOf("TweetResultByRestId")>-1){var tid=null,tm=us.match(/tweetId[%22:]+(\\d+)/);if(tm)tid=tm[1];return of.apply(this,arguments).then(function(r){r.clone().json().then(function(d){try{var res=d.data&&d.data.tweetResult&&d.data.tweetResult.result;if(!res)return;if(res.__typename==="TweetWithVisibilityResults")res=res.tweet;if(!tid&&res.legacy&&res.legacy.conversation_id_str)tid=res.legacy.conversation_id_str;if(!tid||!window.__xcv)return;var m=res.legacy&&res.legacy.extended_entities&&res.legacy.extended_entities.media;if(!m)return;var best=null,br=-1;for(var i=0;i<m.length;i++){if(m[i].type!=="video"&&m[i].type!=="animated_gif")continue;var v=m[i].video_info&&m[i].video_info.variants;if(!v)continue;for(var j=0;j<v.length;j++){if(v[j].content_type==="video/mp4"&&(v[j].bitrate||0)>br){best=v[j].url;br=v[j].bitrate||0;}}}if(best)window.__xcv(tid,best);}catch(e){}}).catch(function(){});return r;});}return of.apply(this,arguments);};window.__xcvQueue=window.__xcvQueue||[];window.__xcv=function(id,url){window.__xcvQueue.push({id:id,url:url});}})()';
-        W.eval(injCode);
+        var injCode = 'var of=fetch;if(of&&!fetch.toString().match(/TweetResultByRestId/)){fetch=function(u,o){var us=typeof u==="string"?u:(u&&u.url?u.url:"");if(us.indexOf("TweetResultByRestId")>-1){var tid=null,tm=us.match(/tweetId[%22:]+(\\d+)/);if(tm)tid=tm[1];return of.call(this,u,o).then(function(r){r.clone().json().then(function(d){try{var res=d.data&&d.data.tweetResult&&d.data.tweetResult.result;if(!res)return;if(res.__typename==="TweetWithVisibilityResults")res=res.tweet;if(!tid&&res.legacy&&res.legacy.conversation_id_str)tid=res.legacy.conversation_id_str;if(!tid)return;var m=res.legacy&&res.legacy.extended_entities&&res.legacy.extended_entities.media;if(!m)return;var best=null,br=-1;for(var i=0;i<m.length;i++){if(m[i].type!=="video"&&m[i].type!=="animated_gif")continue;var v=m[i].video_info&&m[i].video_info.variants;if(!v)continue;for(var j=0;j<v.length;j++){if(v[j].content_type==="video/mp4"&&(v[j].bitrate||0)>br){best=v[j].url;br=v[j].bitrate||0;}}}if(best)window.__xcv(tid,best);}catch(e){}}).catch(function(){});return r;});}return of.call(this,u,o);};window.__xcvQueue=window.__xcvQueue||[];window.__xcv=function(id,url){__xcvQueue.push({id:id,url:url});};}';
+        var a = document.createElement('a');
+        a.href = 'javascript:' + encodeURIComponent(injCode);
+        a.style.display = 'none';
+        document.documentElement.appendChild(a);
+        a.click();
+        a.remove();
     } catch(e) {}
 
     // Poll the __xcvQueue from page context and drain into _videoUrls
