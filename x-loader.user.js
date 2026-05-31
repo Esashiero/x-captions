@@ -93,10 +93,12 @@
         return os.apply(this, arguments);
     };
 
-    // Also intercept fetch() — X.com now uses fetch for GraphQL
-    var of = W.fetch;
-    if (of) {
-        W.fetch = function(url, opts) {
+    // Inject fetch interceptor into page context via script element
+    // This bypasses Tampermonkey's isolated world so the patch takes effect
+    // before X.com's boot scripts execute
+    var injFetch = '('+function(){
+        var of = window.fetch;
+        window.fetch = function(url, opts) {
             var urlStr = typeof url === 'string' ? url : (url && url.url ? url.url : '');
             if (urlStr.indexOf('TweetResultByRestId') > -1) {
                 var tweetId = null;
@@ -109,16 +111,22 @@
                         if (!r) return;
                         if (r.__typename === 'TweetWithVisibilityResults') r = r.tweet;
                         if (!tweetId && r.legacy && r.legacy.conversation_id_str) tweetId = r.legacy.conversation_id_str;
-                        captureVideoUrl(d, tweetId);
+                        if (window._captureVideoUrl) window._captureVideoUrl(d, tweetId);
                     }).catch(function(){});
                     return resp;
                 });
             }
             return of.apply(this, arguments);
         };
-    }
+    }+')\n//# sourceURL=x-captions-fetch';
+    try {
+        var se = document.createElement('script');
+        se.textContent = injFetch;
+        (document.documentElement || document.head || document.body).appendChild(se);
+    } catch(e) {}
 
-    function captureVideoUrl(d, tweetId) {
+    // Expose viewer to page context so injected script can call it
+    window._captureVideoUrl = function(d, tweetId) {
         if (!tweetId) return;
         try {
             var r = d.data && d.data.tweetResult && d.data.tweetResult.result;
@@ -138,7 +146,7 @@
             }
             if (best) _videoUrls[tweetId] = best;
         } catch(e) {}
-    }
+    };
 
     // ── Get tweet ID from DOM for a video player ────────
     function getTweetId(player) {
