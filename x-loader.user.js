@@ -93,55 +93,14 @@
         return os.apply(this, arguments);
     };
 
-    // Inject fetch interceptor + video url capture into page context
-    // This runs as a <script> element so it patches window.fetch in the
-    // page's real JS context before X.com's boot scripts execute.
-    // Both the interceptor AND the capture function live in page context.
-    var injCode = [
-        '(function(){',
-        'var of=window.fetch;',
-        'if(!of)return;',
-        'window.fetch=function(url,opts){',
-        'var urlStr=typeof url==="string"?url:(url&&url.url?url.url:"");',
-        'if(urlStr.indexOf("TweetResultByRestId")>-1){',
-        'var tweetId=null,tm=urlStr.match(/tweetId[%22:]+(\\d+)/);',
-        'if(tm)tweetId=tm[1];',
-        'return of.apply(this,arguments).then(function(resp){',
-        'resp.clone().json().then(function(d){',
-        'try{',
-        'var r=d.data&&d.data.tweetResult&&d.data.tweetResult.result;',
-        'if(!r)return;',
-        'if(r.__typename==="TweetWithVisibilityResults")r=r.tweet;',
-        'if(!tweetId&&r.legacy&&r.legacy.conversation_id_str)tweetId=r.legacy.conversation_id_str;',
-        'if(!tweetId)return;',
-        'var m=r.legacy&&r.legacy.extended_entities&&r.legacy.extended_entities.media;',
-        'if(!m)return;var best=null,br=-1;',
-        'for(var i=0;i<m.length;i++){',
-        'if(m[i].type!=="video"&&m[i].type!=="animated_gif")continue;',
-        'var v=m[i].video_info&&m[i].video_info.variants;',
-        'if(!v)continue;',
-        'for(var j=0;j<v.length;j++){',
-        'if(v[j].content_type==="video/mp4"&&(v[j].bitrate||0)>br)',
-        '{best=v[j].url;br=v[j].bitrate||0;}',
-        '}',
-        '}',
-        'if(best&&window.__xcv)window.__xcv(tweetId,best);',
-        '}catch(e){}',
-        '}).catch(function(){});',
-        'return resp;',
-        '});',
-        '}',
-        'return of.apply(this,arguments);',
-        '};',
-        // Expose callback that the isolated-world script can poll
-        'window.__xcvQueue=window.__xcvQueue||[];',
-        'window.__xcv=function(id,url){window.__xcvQueue.push({id:id,url:url});};',
-        '})()'
-    ].join('');
+    // Inject fetch interceptor into page context.
+    // Tampermonkey's isolated world prevents direct assignment to
+    // unsafeWindow.fetch from propagating. The <script> element approach
+    // also doesn't execute reliably. Use W.eval() which evaluates in
+    // the page's real JS execution context.
     try {
-        var se = document.createElement('script');
-        se.textContent = '(' + injCode + ')\n//# sourceURL=x-captions-inject';
-        (document.documentElement || document.head || document.body).appendChild(se);
+        var injCode = '(function(){var of=window.fetch;if(!of)return;window.fetch=function(url,opts){var us=typeof url==="string"?url:(url&&url.url?url.url:"");if(us.indexOf("TweetResultByRestId")>-1){var tid=null,tm=us.match(/tweetId[%22:]+(\\d+)/);if(tm)tid=tm[1];return of.apply(this,arguments).then(function(r){r.clone().json().then(function(d){try{var res=d.data&&d.data.tweetResult&&d.data.tweetResult.result;if(!res)return;if(res.__typename==="TweetWithVisibilityResults")res=res.tweet;if(!tid&&res.legacy&&res.legacy.conversation_id_str)tid=res.legacy.conversation_id_str;if(!tid||!window.__xcv)return;var m=res.legacy&&res.legacy.extended_entities&&res.legacy.extended_entities.media;if(!m)return;var best=null,br=-1;for(var i=0;i<m.length;i++){if(m[i].type!=="video"&&m[i].type!=="animated_gif")continue;var v=m[i].video_info&&m[i].video_info.variants;if(!v)continue;for(var j=0;j<v.length;j++){if(v[j].content_type==="video/mp4"&&(v[j].bitrate||0)>br){best=v[j].url;br=v[j].bitrate||0;}}}if(best)window.__xcv(tid,best);}catch(e){}}).catch(function(){});return r;});}return of.apply(this,arguments);};window.__xcvQueue=window.__xcvQueue||[];window.__xcv=function(id,url){window.__xcvQueue.push({id:id,url:url});}})()';
+        W.eval(injCode);
     } catch(e) {}
 
     // Poll the __xcvQueue from page context and drain into _videoUrls
