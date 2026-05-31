@@ -65,7 +65,7 @@
         return 'rgba('+r+','+g+','+b+','+o+')';
     }
 
-    // ── Intercept XHR (capture MP4 URL per tweet ID) ───
+    // ── Intercept XHR + Fetch (capture MP4 URL per tweet ID) ──
     var W = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
     var ox = W.XMLHttpRequest.prototype.open;
     W.XMLHttpRequest.prototype.open = function(m, u) {
@@ -76,37 +76,69 @@
     W.XMLHttpRequest.prototype.send = function(b) {
         var xhr = this;
         if (xhr._xurl && xhr._xurl.indexOf('TweetResultByRestId') > -1) {
-            // Extract tweet ID from URL-encoded query string
             var tweetId = null;
             var tm = xhr._xurl.match(/tweetId[%22:]+(\d+)/);
             if (tm) tweetId = tm[1];
-
             xhr.addEventListener('load', function() {
                 try {
                     var d = JSON.parse(xhr.responseText);
                     var r = d.data && d.data.tweetResult && d.data.tweetResult.result;
                     if (!r) return;
                     if (r.__typename === 'TweetWithVisibilityResults') r = r.tweet;
-                    // Fallback: extract tweet ID from response if URL parsing failed
                     if (!tweetId && r.legacy && r.legacy.conversation_id_str) tweetId = r.legacy.conversation_id_str;
-                    var m = r.legacy && r.legacy.extended_entities && r.legacy.extended_entities.media;
-                    if (!m) return;
-                    var best = null, br = -1;
-                    for (var i=0; i<m.length; i++) {
-                        if (m[i].type !== 'video' && m[i].type !== 'animated_gif') continue;
-                        var v = m[i].video_info && m[i].video_info.variants;
-                        if (!v) continue;
-                        for (var j=0; j<v.length; j++) {
-                            if (v[j].content_type === 'video/mp4' && (v[j].bitrate||0) > br)
-                                { best = v[j].url; br = v[j].bitrate||0; }
-                        }
-                    }
-                    if (best && tweetId) _videoUrls[tweetId] = best;
+                    captureVideoUrl(d, tweetId);
                 } catch(e) {}
             });
         }
         return os.apply(this, arguments);
     };
+
+    // Also intercept fetch() — X.com now uses fetch for GraphQL
+    var of = W.fetch;
+    if (of) {
+        W.fetch = function(url, opts) {
+            var urlStr = typeof url === 'string' ? url : (url && url.url ? url.url : '');
+            if (urlStr.indexOf('TweetResultByRestId') > -1) {
+                var tweetId = null;
+                var tm = urlStr.match(/tweetId[%22:]+(\d+)/);
+                if (tm) tweetId = tm[1];
+                return of.apply(this, arguments).then(function(resp) {
+                    var c = resp.clone();
+                    c.json().then(function(d) {
+                        var r = d.data && d.data.tweetResult && d.data.tweetResult.result;
+                        if (!r) return;
+                        if (r.__typename === 'TweetWithVisibilityResults') r = r.tweet;
+                        if (!tweetId && r.legacy && r.legacy.conversation_id_str) tweetId = r.legacy.conversation_id_str;
+                        captureVideoUrl(d, tweetId);
+                    }).catch(function(){});
+                    return resp;
+                });
+            }
+            return of.apply(this, arguments);
+        };
+    }
+
+    function captureVideoUrl(d, tweetId) {
+        if (!tweetId) return;
+        try {
+            var r = d.data && d.data.tweetResult && d.data.tweetResult.result;
+            if (!r) return;
+            if (r.__typename === 'TweetWithVisibilityResults') r = r.tweet;
+            var m = r.legacy && r.legacy.extended_entities && r.legacy.extended_entities.media;
+            if (!m) return;
+            var best = null, br = -1;
+            for (var i=0; i<m.length; i++) {
+                if (m[i].type !== 'video' && m[i].type !== 'animated_gif') continue;
+                var v = m[i].video_info && m[i].video_info.variants;
+                if (!v) continue;
+                for (var j=0; j<v.length; j++) {
+                    if (v[j].content_type === 'video/mp4' && (v[j].bitrate||0) > br)
+                        { best = v[j].url; br = v[j].bitrate||0; }
+                }
+            }
+            if (best) _videoUrls[tweetId] = best;
+        } catch(e) {}
+    }
 
     // ── Get tweet ID from DOM for a video player ────────
     function getTweetId(player) {
