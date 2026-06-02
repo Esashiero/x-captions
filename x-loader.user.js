@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X.com AI Captions
 // @namespace    local.x-features
-// @version      7.6
+// @version      7.7
 // @description  AI captions for X/Twitter videos. No server needed.
 // @author       Hermes
 // @match        https://x.com/*
@@ -97,12 +97,76 @@
     // redefinition — it creates an own property on the page's window that
     // shadows Window.prototype.fetch. CSP does NOT block this because it's not
     // inline script execution.
+    //
+    // TIMING NOTE: On Chrome, @run-at document-start doesn't guarantee our code runs
+    // before ESM module scripts. X.com's framework stores a reference to the real
+    // fetch at module init time, so our fetch/XHR interceptors may miss the initial
+    // API call. The fetchVideoUrlDirect fallback handles this by making its own
+    // GraphQL call when the user clicks AI Captions.
+
+    var GRAPHQL_TWEET_RESULT_ID = 'SgZWKwvBiOKrSC0QeOGvXw';
+    var X_AUTH_BEARER = 'AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs=1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
 
     var W = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
     var origFetch = W.fetch;
 
     // Override fetch on the page's window via Object.defineProperty
     // (bypasses Tampermonkey's proxy set trap for unsafeWindow)
+    function getCookie(name) {
+        var m = document.cookie.match(new RegExp('(?:^| )' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '=([^;]*)'));
+        return m ? decodeURIComponent(m[1]) : '';
+    }
+
+    function fetchVideoUrlDirect(tweetId, cb) {
+        var variables = {
+            tweetId: tweetId,
+            includePromotedContent: true,
+            withBirdwatchNotes: true,
+            withVoice: true,
+            withCommunity: true
+        };
+        var features = {
+            rweb_video_screen_enabled: false,
+            rweb_cashtags_enabled: true,
+            creator_subscriptions_tweet_preview_api_enabled: true,
+            premium_content_api_read_enabled: false,
+            communities_web_enable_tweet_community_results_fetch: true,
+            c9s_tweet_anatomy_moderator_badge_enabled: true,
+            responsive_web_grok_analyze_button_fetch_trends_enabled: false,
+            responsive_web_grok_analyze_post_followups_enabled: true,
+            responsive_web_graphql_timeline_navigation_enabled: true,
+            responsive_web_graphql_skip_user_profile_image_extensions_enabled: false,
+            responsive_web_grok_image_annotation_enabled: true,
+            responsive_web_grok_imagine_annotation_enabled: true,
+            responsive_web_grok_community_note_auto_translation_is_enabled: true,
+            profile_label_improvements_pcf_label_in_post_enabled: true,
+            responsive_web_profile_redirect_enabled: false,
+            rweb_tipjar_consumption_enabled: false,
+            verified_phone_label_enabled: false,
+            longform_notetweets_rich_text_read_enabled: true,
+            view_counts_everywhere_api_enabled: true
+        };
+        var url = 'https://x.com/i/api/graphql/' + GRAPHQL_TWEET_RESULT_ID + '/TweetResultByRestId' +
+            '?variables=' + encodeURIComponent(JSON.stringify(variables)) +
+            '&features=' + encodeURIComponent(JSON.stringify(features));
+
+        var ct0 = getCookie('ct0');
+        origFetch(url, {
+            headers: {
+                'authorization': 'Bearer ' + X_AUTH_BEARER,
+                'x-csrf-token': ct0,
+                'x-twitter-auth-type': 'OAuth2Session',
+                'x-twitter-client-language': 'en'
+            }
+        }).then(function(r) {
+            if (!r.ok) { cb(null); return; }
+            return r.json().then(function(d) {
+                captureVideoUrl(d, tweetId);
+                cb(_videoUrls[tweetId] || null);
+            });
+        }).catch(function() { cb(null); });
+    }
+
     function installFetchInterceptor() {
         if (!origFetch) return;
         try {
@@ -251,8 +315,24 @@
 
         // Look up video URL for this specific player
         var pl = w.closest('[data-testid="videoPlayer"]');
-        var url = _videoUrls[getTweetId(pl)];
-        if (!url) { statusMsg('No video data yet'); busy=false; return; }
+        var tweetId = getTweetId(pl);
+        var url = _videoUrls[tweetId];
+        if (!url) {
+            // Fallback: fetch video URL directly (bypasses timing issue with interceptors)
+            busy=true; w.setAttribute('data-busy','1'); statusMsg('Fetching video data...');
+            fetchVideoUrlDirect(tweetId, function(newUrl) {
+                if (newUrl) {
+                    _videoUrls[tweetId] = newUrl;
+                    statusMsg('Transcribing...');
+                    transcribe(newUrl);
+                } else {
+                    busy=false;
+                    w.removeAttribute('data-busy');
+                    statusMsg('No video data yet');
+                }
+            });
+            return;
+        }
         busy=true; w.setAttribute('data-busy','1'); statusMsg('Transcribing...'); transcribe(url);
     }
 
