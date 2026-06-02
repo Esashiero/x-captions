@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X.com AI Captions
 // @namespace    local.x-features
-// @version      7.5
+// @version      7.6
 // @description  AI captions for X/Twitter videos. No server needed.
 // @author       Hermes
 // @match        https://x.com/*
@@ -66,6 +66,26 @@
         return 'rgba('+r+','+g+','+b+','+o+')';
     }
 
+    // ── Helper: extract tweetId from GraphQL URL ────────
+    // X.com uses GET requests with URL-encoded variables in query params:
+    // .../TweetResultByRestId?variables=%7B%22tweetId%22%3A%222061876992514126153%22%2C...
+    // The old regex /tweetId[%22:]+(\d+)/ fails because %3A (URL-encoded ':')
+    // has '3' which isn't in the char class — it captures only '3'.
+    function extractTweetIdFromUrl(url) {
+        var q = url.indexOf('?');
+        if (q < 0) return null;
+        var search = url.substring(q + 1);
+        // Find the variables= parameter
+        var vm = search.match(/(?:^|&)variables=([^&]+)/);
+        if (!vm) return null;
+        try {
+            var s = decodeURIComponent(vm[1]);
+            var vars = JSON.parse(s);
+            if (vars && vars.tweetId) return vars.tweetId;
+        } catch(e) {}
+        return null;
+    }
+
     // ── Capture video URL from GraphQL responses ─────────
     // X.com now uses blob URLs for <video> elements (currentSrc = blob:https://x.com/...),
     // so DOM-based src extraction won't give us the real MP4 URL.
@@ -95,9 +115,7 @@
                             if (!r || !r.clone || !r.ok) return;
                             r.clone().json().then(function(d) {
                                 try {
-                                    var tid = null;
-                                    var tm = url.match(/tweetId[%22:]+(\d+)/);
-                                    if (tm) tid = tm[1];
+                                    var tid = extractTweetIdFromUrl(url);
                                     var res = d.data && d.data.tweetResult && d.data.tweetResult.result;
                                     if (!res) return;
                                     if (res.__typename === 'TweetWithVisibilityResults') res = res.tweet;
@@ -123,9 +141,7 @@
                         if (!r || !r.clone || !r.ok) return;
                         r.clone().json().then(function(d) {
                             try {
-                                var tid = null;
-                                var tm = url.match(/tweetId[%22:]+(\d+)/);
-                                if (tm) tid = tm[1];
+                                var tid = extractTweetIdFromUrl(url);
                                 var res = d.data && d.data.tweetResult && d.data.tweetResult.result;
                                 if (!res) return;
                                 if (res.__typename === 'TweetWithVisibilityResults') res = res.tweet;
@@ -152,9 +168,7 @@
     W.XMLHttpRequest.prototype.send = function(b) {
         var xhr = this;
         if (xhr._xurl && xhr._xurl.indexOf('TweetResultByRestId') > -1) {
-            var tweetId = null;
-            var tm = xhr._xurl.match(/tweetId[%22:]+(\d+)/);
-            if (tm) tweetId = tm[1];
+            var tweetId = extractTweetIdFromUrl(xhr._xurl);
             xhr.addEventListener('load', function() {
                 try {
                     var d = JSON.parse(xhr.responseText);
