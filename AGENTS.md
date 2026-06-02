@@ -5,7 +5,7 @@ Comprehensive reference for AI agents working on this userscript. Contains all X
 ## Project Overview
 
 - **File**: `/home/shiro/projects/x-captions/x-loader.user.js`
-- **Version**: 7.7 (fetch interceptor + GraphQL fallback + URL-encoding fix)
+- **Version**: 7.11 (per-video caption storage — fix wrong captions on different videos)
 - **GitHub**: `github.com/Esashiero/x-captions` (public, auto-update enabled)
 - **Auto-update URLs**:
   - `@downloadURL`: `https://raw.githubusercontent.com/Esashiero/x-captions/main/x-loader.user.js`
@@ -17,7 +17,7 @@ Comprehensive reference for AI agents working on this userscript. Contains all X
 
 ```
 x-captions/
-├── x-loader.user.js   # Single-file userscript (~670 lines)
+├── x-loader.user.js   # Single-file userscript (~730 lines)
 ├── README.md          # End-user docs
 └── AGENTS.md          # This file (AI reference)
 ```
@@ -339,7 +339,39 @@ This is robust against any URL-encoding format.
 1. **Fetch interceptor** (lines 170-222): Uses `Object.defineProperty` on `unsafeWindow` to wrap `window.fetch`. Also adds a `XHR.prototype.open`/`send` interceptor for XHR-based API calls. These catch subsequent API calls (e.g., `TweetDetail`).
 2. **On-demand fallback** `fetchVideoUrlDirect()` (lines 120-168): When the user clicks AI Captions and `_videoUrls[tweetId]` is empty (interceptor missed it), makes a direct GraphQL call using `origFetch` (the original page fetch) with the X.com auth bearer token, cookies, and proper headers.
 
-### Issue 11: Duplicated Interceptor Response Handling (Optimization — pre-7.8)
+### Issue 12: Timeline — No Visible CC Button on Inline Video Thumbnails (v7.9)
+**Problem**: On the X.com home timeline, videos load as inline compact players (not expanded full-size players). The controls bar (with mute/unmute button) is NOT rendered until the user actually interacts with the video. Since `inject()` required the mute button to find the injection point, it silently returned without injecting anything. Additionally, the `tryGo` poll only ran for 30s after page load, so videos loaded via infinite scroll later would miss injection entirely.
+
+**Solution**: Three-pronged approach:
+1. **Floating CC badge** (`mkCCFloat()`, line 662): When the mute button doesn't exist (compact mode), inject the CC button directly on `[data-testid="videoComponent"]` as a `position:absolute` overlay at bottom-right. Semi-transparent circle with hover effect — always visible.
+2. **`retryInject()`** (line 702): Retries injection up to 15 times (12s total at 800ms intervals), giving lazy-loaded video elements time to render `videoComponent`.
+3. **Continuous background poll** (`startPoll()`, line 710): `setInterval` every 3 seconds that checks ALL `[data-testid="videoPlayer"]` elements and injects CC on any that lack it. This runs forever, handling X.com's DOM virtualization (React cleanup/re-render cycles).
+
+**DOM position for floating badge:**
+```
+[data-testid="videoPlayer"]
+  └── [data-testid="videoComponent"]   <-- style.position='relative'
+      ├── <video>
+      └── [data-x-feature="cc"]        <-- injected as lastChild, position:absolute
+          └── <button>                  <-- 34x34px circle, hover animation
+```
+
+### Issue 13: MutationObserver `_inj` Flag Blocks Re-injection After DOM Cleanup
+**Problem**: The MutationObserver used a `_inj` flag (`if(!pl._inj){pl._inj=true;...}`) to avoid re-processing video players. But X.com uses virtualized scrolling — when a tweet scrolls out of view and back, its DOM node may be recycled with a different video URL but the same `_inj=true` flag, preventing re-injection.
+
+**Solution**: Removed the `_inj` flag entirely. The MutationObserver now checks `pl.querySelector('[data-x-feature="cc"]')` for every player on every mutation. If a player doesn't have a CC button, `retryInject()` is called. The continuous poll (`startPoll()`) provides additional coverage.
+
+### Issue 14: Global `caps` — Clicking Video B Shows Video A's Captions (v7.11)
+**Problem**: A single global caps array was shared across the entire page. When the user clicked CC on video B (after having used it on video A), the script checked `if(caps){showCaps();return;}` and immediately showed video A's captions on video B. This made the extension unusable on timelines with multiple videos.
+
+**Root cause**: The transcript API was correctly fetching video-specific data and storing it in `_videoUrls[tweetId]`, but the captions themselves were kept in a global variable, losing the per-video association.
+
+**Solution**:
+1. Replace `caps` (global) with `_videoCaps = {}` (dict keyed by tweetId).
+2. Add `_activeTweetId` to track which video's captions should be shown.
+3. Update `toggleCC()` to check `_videoCaps[tweetId]` instead of `caps`.
+4. Update `showCaps()` to read from `_videoCaps[_activeTweetId]` and refresh the interval's reference on every tick.
+5. Pass `tweetId` consistently through `transcribe()`, `retryTranscribe()`, and `handleTranscribe()` so the correct video context is preserved through async callbacks.
 **Problem**: The `Object.defineProperty` fetch wrapper and the direct-assignment fallback contain identical ~20-line response processing logic (clone response → parse JSON → extract tweetId → store URL).
 **Suggested Fix**: Extract into a shared `handleFetchResponse(url, promise)` function to eliminate duplication.
 
@@ -347,10 +379,10 @@ This is robust against any URL-encoding format.
 
 ## Known Bugs
 
-### Bug 1: Global `_videoUrl` Doesn't Track Per-Video
-**Severity**: Fixed in v7.7
-**Description**: Was a single `_videoUrl` variable. Now uses `_videoUrls = {}` map keyed by tweet ID (line 21).
-**Resolution**: Each video URL is stored under its tweet ID. Clicking CC on any video looks up the correct URL.
+### Bug 1: Global `caps` Shared Across Videos
+**Severity**: Fixed in v7.11
+**Description**: Was a single global `caps` array. Now uses `_videoCaps = {}` dict keyed by tweet ID. Also replaced global `_activeTweetId` so `showCaps()` reads from `_videoCaps[_activeTweetId]`. Clicking CC on any video now shows its own specific captions.
+**Resolution**: Each video's captions are stored independently under its tweet ID.
 
 ### Bug 2: No Retry on Transcription Failure
 **Severity**: Fixed in v7.7
@@ -400,8 +432,9 @@ This is robust against any URL-encoding format.
 | URL-encoded query param parsing | `extractTweetIdFromUrl` robustly handles URL-encoded `variables` GET params for tweetId extraction |
 | Fetch API interceptor | `Object.defineProperty` on `unsafeWindow.fetch` + direct-assignment fallback for Firefox |
 | On-demand GraphQL fallback | `fetchVideoUrlDirect` makes a direct API call when interceptors miss the initial graphql request |
-| Per-video URL tracking via `_videoUrls{}` | Video URLs stored in a dict keyed by tweet ID instead of a single global variable |
-| Transcription retry with fallback model | 3 attempts with 1.5s delay + model fallback to `mistral-small-latest` on chat API failure |
+|| Per-video URL tracking via `_videoUrls{}` | Video URLs stored in a dict keyed by tweet ID instead of a single global variable |
+|| Per-video caption storage via `_videoCaps{}` | Each video's captions tracked by tweet ID, preventing cross-video contamination |
+|| Transcription retry with fallback model | 3 attempts with 1.5s delay + model fallback to `mistral-small-latest` on chat API failure |
 
 ### Proposed / Not Implemented
 

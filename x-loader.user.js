@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X.com AI Captions
 // @namespace    local.x-features
-// @version      7.8
+// @version      7.11
 // @description  AI captions for X/Twitter videos. No server needed.
 // @author       Hermes
 // @match        https://x.com/*
@@ -15,13 +15,14 @@
 // @run-at       document-start
 // ==/UserScript==
 // x-captions — AI captions for X/Twitter videos
-// v7.8: timeline support — floating CC badge for inline videos + continuous background poll + 15x retry
+// v7.11: per-video caption storage, fix showing wrong captions on different videos
+// v7.10: fix floating badge position (videoPlayer parent), show 'No speech detected' for silent videos
 // v7.7: fetchVideoUrlDirect fallback for Chrome timing + per-video URL tracking
 // v7.6: fix tweetId extraction from URL-encoded GET params
 (function() {
     'use strict';
 
-    var _videoUrls = {}, caps = null, intv = null, busy = false;
+    var _videoUrls = {}, _videoCaps = {}, _activeTweetId = null, intv = null, busy = false;
     var SKEY = 'x_captions_settings';
 
     // ── Providers ────────────────────────────────────────
@@ -312,22 +313,33 @@
             var b=w.querySelector('button'); if(b) b.style.opacity='.5';
             hideCaps(); if(intv){clearInterval(intv);intv=null;} return;
         }
+        // Deactivate any other active CC buttons first
+        var active = document.querySelectorAll('[data-x-feature="cc"][data-on="1"]');
+        for(var i=0;i<active.length;i++) {
+            active[i].setAttribute('data-on','0');
+            var b2=active[i].querySelector('button');
+            if(b2) b2.style.opacity='.5';
+        }
         w.setAttribute('data-on','1');
         var b=w.querySelector('button'); if(b) b.style.opacity='1';
-        if(caps){showCaps();return;} if(busy){statusMsg('Working...');return;}
 
-        // Look up video URL for this specific player
         var pl = w.closest('[data-testid="videoPlayer"]');
         var tweetId = getTweetId(pl);
+        if(!tweetId){w.setAttribute('data-on','0');return;}
+        _activeTweetId = tweetId;
+
+        // Per-video caps check
+        if(_videoCaps[tweetId]){ hideCaps(); showCaps(); return; }
+        if(busy){statusMsg('Working...');return;}
+
         var url = _videoUrls[tweetId];
         if (!url) {
-            // Fallback: fetch video URL directly (bypasses timing issue with interceptors)
             busy=true; w.setAttribute('data-busy','1'); statusMsg('Fetching video data...');
             fetchVideoUrlDirect(tweetId, function(newUrl) {
                 if (newUrl) {
                     _videoUrls[tweetId] = newUrl;
                     statusMsg('Transcribing...');
-                    transcribe(newUrl);
+                    transcribe(newUrl, tweetId);
                 } else {
                     busy=false;
                     w.removeAttribute('data-busy');
@@ -336,7 +348,7 @@
             });
             return;
         }
-        busy=true; w.setAttribute('data-busy','1'); statusMsg('Transcribing...'); transcribe(url);
+        busy=true; w.setAttribute('data-busy','1'); statusMsg('Transcribing...'); transcribe(url, tweetId);
     }
 
     // ── Caption positioning (follows controls bar) ──────
@@ -515,8 +527,7 @@
         }, 100);
     }
 
-    // ── Transcription (with retry) ──────────────────────
-    function transcribe(url, attempt) {
+    function transcribe(url, tweetId, attempt) {
         attempt = attempt || 1;
         var pv = PROVIDERS[s.provider] || PROVIDERS[DEF.provider];
         var key = pv.key, model = s.model || DEF.model;
@@ -533,17 +544,17 @@
             method:'POST', url:pv.transcribe,
             headers:{'Authorization':'Bearer '+key,'Content-Type':'multipart/form-data; boundary='+bd},
             data:parts.join('\r\n'),
-            onload:function(r){ handleTranscribe(r); },
-            onerror:function(){ retryTranscribe(url, attempt); },
-            ontimeout:function(){ retryTranscribe(url, attempt); }
+            onload:function(r){ handleTranscribe(r, tweetId); },
+            onerror:function(){ retryTranscribe(url, tweetId, attempt); },
+            ontimeout:function(){ retryTranscribe(url, tweetId, attempt); }
         });
     }
 
-    function retryTranscribe(url, attempt) {
-        if (!busy) return; // user toggled CC off
+    function retryTranscribe(url, tweetId, attempt) {
+        if (!busy) return;
         if (attempt < 3) {
             statusMsg('Retrying (attempt ' + (attempt + 1) + ')...');
-            setTimeout(function(){ transcribe(url, attempt + 1); }, 1500);
+            setTimeout(function(){ transcribe(url, tweetId, attempt + 1); }, 1500);
         } else {
             busy = false;
             var w = document.querySelector('[data-x-feature="cc"][data-busy]');
@@ -552,28 +563,28 @@
         }
     }
 
-    function handleTranscribe(r) {
+    function handleTranscribe(r, tweetId) {
         busy=false;
         var w = document.querySelector('[data-x-feature="cc"][data-busy]');
         if (w) w.removeAttribute('data-busy');
+        if(!tweetId) { statusMsg('No tweet ID'); return; }
         try {
             var j=JSON.parse(r.responseText);
             if (j.segments && j.segments.length) {
                 var raw = j.segments;
                 if (s.lang === 'original') {
-                    caps = raw.map(function(s){return{start:s.start,end:s.end,text:(s.text||'').trim()};});
-                    hideCaps(); showCaps();
+                    _videoCaps[tweetId] = raw.map(function(s){return{start:s.start,end:s.end,text:(s.text||'').trim()};});
+                    hideCaps(); _activeTweetId = tweetId; showCaps();
                 } else {
                     statusMsg('Translating...');
                     var txts = raw.map(function(s){return s.text;}).join('\n');
                     var target = LANG_MAP[s.lang] || 'English';
                     var pv = PROVIDERS[s.provider] || PROVIDERS[DEF.provider];
                     if (!pv.chat) {
-                        caps = raw.map(function(s){return{start:s.start,end:s.end,text:(s.text||'').trim()};});
-                        hideCaps(); showCaps();
+                        _videoCaps[tweetId] = raw.map(function(s){return{start:s.start,end:s.end,text:(s.text||'').trim()};});
+                        hideCaps(); _activeTweetId = tweetId; showCaps();
                         return;
                     }
-                    // Try the selected model first; on failure, the catch falls back to original text
                     var translateModel = s.model || 'mistral-small-latest';
                     GM_xmlhttpRequest({
                         method:'POST', url:pv.chat,
@@ -583,9 +594,8 @@
                             try {
                                 var t = JSON.parse(r2.responseText);
                                 var tr = t.choices[0].message.content.trim().split('\n');
-                                caps = raw.map(function(s,i){return{start:s.start,end:s.end,text:(tr[i]||s.text).trim()};});
+                                _videoCaps[tweetId] = raw.map(function(s,i){return{start:s.start,end:s.end,text:(tr[i]||s.text).trim()};});
                             } catch(e) {
-                                // Translation failed with selected model; retry with mistral-small-latest as fallback
                                 if (translateModel !== 'mistral-small-latest' && s.provider === 'mistral') {
                                     statusMsg('Model failed, retrying with mistral-small-latest...');
                                     GM_xmlhttpRequest({
@@ -596,24 +606,27 @@
                                             try {
                                                 var t2 = JSON.parse(r3.responseText);
                                                 var tr2 = t2.choices[0].message.content.trim().split('\n');
-                                                caps = raw.map(function(s,i){return{start:s.start,end:s.end,text:(tr2[i]||s.text).trim()};});
-                                            } catch(e2) { caps = raw.map(function(s){return{start:s.start,end:s.end,text:(s.text||'').trim()};}); }
+                                                _videoCaps[tweetId] = raw.map(function(s,i){return{start:s.start,end:s.end,text:(tr2[i]||s.text).trim()};});
+                                            } catch(e2) { _videoCaps[tweetId] = raw.map(function(s){return{start:s.start,end:s.end,text:(s.text||'').trim()};}); }
                                             hideCaps(); showCaps();
                                         },
-                                        onerror:function(){caps=raw.map(function(s){return{start:s.start,end:s.end,text:(s.text||'').trim()};});hideCaps();showCaps();}
+                                        onerror:function(){_videoCaps[tweetId]=raw.map(function(s){return{start:s.start,end:s.end,text:(s.text||'').trim()};});hideCaps();showCaps();}
                                     });
                                 } else {
-                                    caps = raw.map(function(s){return{start:s.start,end:s.end,text:(s.text||'').trim()};});
+                                    _videoCaps[tweetId] = raw.map(function(s){return{start:s.start,end:s.end,text:(s.text||'').trim()};});
                                     hideCaps(); showCaps();
                                 }
                             }
                             hideCaps(); showCaps();
                         },
-                        onerror:function(){caps=raw.map(function(s){return{start:s.start,end:s.end,text:(s.text||'').trim()};});hideCaps();showCaps();}
+                        onerror:function(){_videoCaps[tweetId]=raw.map(function(s){return{start:s.start,end:s.end,text:(s.text||'').trim()};});hideCaps();showCaps();}
                     });
                 }
             } else if (j.text) {
-                caps = [{start:0,end:120,text:j.text.trim()}]; hideCaps(); showCaps();
+                _videoCaps[tweetId] = [{start:0,end:120,text:j.text.trim()}]; hideCaps();
+                _activeTweetId = tweetId; showCaps();
+            } else if (j.segments && j.segments.length === 0) {
+                statusMsg('No speech detected');
             } else { statusMsg('API error'); }
         } catch(e) { statusMsg('Parse error'); }
     }
@@ -631,7 +644,8 @@
         var vc=p.querySelector('[data-testid="videoComponent"]'); if(vc) vc.appendChild(o);
     }
     function showCaps() {
-        if(!caps) return; var p=videoPlayer(); if(!p) return; var v=p.querySelector('video'); if(!v) return;
+        var caps = _videoCaps[_activeTweetId]; if(!caps) return;
+        var p=videoPlayer(); if(!p) return; var v=p.querySelector('video'); if(!v) return;
         ripCaps(p); var o=document.createElement('div'); o.setAttribute('data-x-feature','co');
         o.style.cssText='position:absolute;bottom:'+ctrlBottom()+';left:0;right:0;text-align:center;padding:8px 16px;z-index:9999;pointer-events:none;';
         var t=document.createElement('div'); t.id='ct';
@@ -639,8 +653,9 @@
         var c=v.currentTime; for(var i=0;i<caps.length;i++){if(c>=caps[i].start&&c<caps[i].end){t.textContent=caps[i].text;break;}}
         o.appendChild(t); var vc=p.querySelector('[data-testid="videoComponent"]'); if(vc) vc.appendChild(o);
         if(intv) clearInterval(intv); intv=setInterval(function(){
-            if(!v) return; var c=v.currentTime,f='';
-            for(var i=0;i<caps.length;i++){if(c>=caps[i].start&&c<caps[i].end){f=caps[i].text;break;}}
+            var caps2 = _videoCaps[_activeTweetId]; if(!caps2||!v) return;
+            var c=v.currentTime,f='';
+            for(var i=0;i<caps2.length;i++){if(c>=caps2[i].start&&c<caps2[i].end){f=caps2[i].text;break;}}
             t.textContent=f;
         },200);
     }
@@ -671,12 +686,9 @@
             c.insertBefore(mkCC(), w);
             return;
         }
-        // Fallback: floating CC badge directly on videoComponent (timeline inline)
-        var vc=pl.querySelector('[data-testid="videoComponent"]');
-        if (vc) {
-            vc.style.position='relative';
-            vc.appendChild(mkCCFloat());
-        }
+        // Fallback: floating CC badge directly on videoPlayer (timeline inline)
+        pl.style.position='relative';
+        pl.appendChild(mkCCFloat());
     }
     var rt=0, pollIntv=null;
     function tryGo(){var ps=document.querySelectorAll('[data-testid="videoPlayer"]');var ok=false;for(var i=0;i<ps.length;i++){inject(ps[i]);if(ps[i].querySelector('[data-x-feature="cc"]'))ok=true;}if(!ok&&rt<60){rt++;setTimeout(tryGo,500);}}
