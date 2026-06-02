@@ -5,7 +5,7 @@ Comprehensive reference for AI agents working on this userscript. Contains all X
 ## Project Overview
 
 - **File**: `/home/shiro/projects/x-captions/x-loader.user.js`
-- **Version**: 7.0 (production cleanup + custom providers)
+- **Version**: 7.7 (fetch interceptor + GraphQL fallback + URL-encoding fix)
 - **GitHub**: `github.com/Esashiero/x-captions` (public, auto-update enabled)
 - **Auto-update URLs**:
   - `@downloadURL`: `https://raw.githubusercontent.com/Esashiero/x-captions/main/x-loader.user.js`
@@ -17,7 +17,7 @@ Comprehensive reference for AI agents working on this userscript. Contains all X
 
 ```
 x-captions/
-├── x-loader.user.js   # Single-file userscript (425 lines)
+├── x-loader.user.js   # Single-file userscript (~670 lines)
 ├── README.md          # End-user docs
 └── AGENTS.md          # This file (AI reference)
 ```
@@ -319,36 +319,65 @@ PROVIDERS.mistral = {
 
 **Solution**: Intercept GraphQL response for the video URL. This is the cleanest approach — no client-side audio handling needed at all.
 
+### Issue 9: tweetId Extraction Fails on URL-Encoded GET Query Params (v7.6)
+**Problem**: X.com switched from POST to GET for `TweetResultByRestId`, using URL-encoded `variables` in query params:
+```
+...?variables=%7B%22tweetId%22%3A%222061876992514126153%22%2C...
+```
+The old regex `/tweetId[%22:]+(\d+)/` failed because `%3A` (URL-encoded `:`) contains `3`, which isn't in the character class `[%22:]` — it captured only `3` instead of the full tweet ID.
+
+**Solution**: New `extractTweetIdFromUrl()` helper (lines 74-87):
+1. Parse the query string for `variables=` parameter
+2. `decodeURIComponent` to get the JSON string
+3. `JSON.parse` to extract `tweetId` from the variables object
+This is robust against any URL-encoding format.
+
+### Issue 10: Chrome Timing — Interceptors Miss First API Call (v7.7)
+**Problem**: On Chrome, `@run-at document-start` doesn't guarantee our code runs before ESM module scripts. X.com's framework stores a reference to the real `fetch` at module init time, so our `Object.defineProperty` interceptor installs after X.com already has its reference. The first `TweetResultByRestId` call is never seen by our interceptor.
+
+**Solution**: Two-pronged approach:
+1. **Fetch interceptor** (lines 170-222): Uses `Object.defineProperty` on `unsafeWindow` to wrap `window.fetch`. Also adds a `XHR.prototype.open`/`send` interceptor for XHR-based API calls. These catch subsequent API calls (e.g., `TweetDetail`).
+2. **On-demand fallback** `fetchVideoUrlDirect()` (lines 120-168): When the user clicks AI Captions and `_videoUrls[tweetId]` is empty (interceptor missed it), makes a direct GraphQL call using `origFetch` (the original page fetch) with the X.com auth bearer token, cookies, and proper headers.
+
+### Issue 11: Duplicated Interceptor Response Handling (Optimization — pre-7.8)
+**Problem**: The `Object.defineProperty` fetch wrapper and the direct-assignment fallback contain identical ~20-line response processing logic (clone response → parse JSON → extract tweetId → store URL).
+**Suggested Fix**: Extract into a shared `handleFetchResponse(url, promise)` function to eliminate duplication.
+
 ---
 
 ## Known Bugs
 
 ### Bug 1: Global `_videoUrl` Doesn't Track Per-Video
-**Severity**: Medium
-**Description**: `_videoUrl` is a single global variable. If a user scrolls through 5 videos on the timeline, `_videoUrl` will contain the MP4 URL of whichever video was loaded *last* by X.com's API. Clicking CC on an earlier video may transcribe the wrong video.
-**Reproduction**: Open a timeline with multiple videos. Wait for all to load. Click CC on the first video. The captions may be for the last video.
-**Suggested Fix**: Store video URLs in a Map keyed by tweet ID or video element. Extract the tweet ID from the GraphQL response URL or from the tweet data itself. When CC is clicked, look up the URL for the specific video element's parent tweet context.
+**Severity**: Fixed in v7.7
+**Description**: Was a single `_videoUrl` variable. Now uses `_videoUrls = {}` map keyed by tweet ID (line 21).
+**Resolution**: Each video URL is stored under its tweet ID. Clicking CC on any video looks up the correct URL.
 
 ### Bug 2: No Retry on Transcription Failure
-**Severity**: Low
-**Description**: If the Mistral API call fails (`onerror` or `ontimeout`), `busy` is set to `false`, but the user must click CC again to retry. No automatic retry.
-**Suggested Fix**: Add retry logic (max 2 additional attempts) with exponential backoff.
+**Severity**: Fixed in v7.7
+**Description**: `retryTranscribe()` (lines 539-550) now retries up to 3 attempts with 1.5s delay. Shows progress messages ("Retrying (attempt 2)...", "API failed after 3 attempts").
+**Resolution**: Implemented exponential retry with 3 max attempts.
 
 ### Bug 3: Translation Model Hardcoded to `mistral-small-latest`
-**Severity**: Medium
-**Description**: The translation step hardcodes `model:'mistral-small-latest'` in the chat API call, even when the user has selected a different provider for transcription. If a custom provider doesn't support that model, translation fails silently (falls back to original text).
-**Suggested Fix**: Use the same model for translation, or add a separate translation model setting.
+**Severity**: Fixed in v7.0, refined in v7.7
+**Description**: The translation step now uses the selected model first (line 574). Falls back to `mistral-small-latest` only if the selected model fails (lines 586-601), then falls back to original text.
+**Resolution**: Uses user's selected model for translation; falls back gracefully.
 
 ### Bug 4: Settings Panel Can Overlap Player Container
-**Severity**: Low
-**Description**: The settings panel uses `position:fixed` and positions near the video player. On small viewports or edge layouts, it can overflow outside the viewport.
-**Suggested Fix**: Bounds-check against `window.innerWidth` and `window.innerHeight` and clamp.
+**Severity**: Fixed in v7.0
+**Description**: Bounds-checking against `window.innerWidth` and `window.innerHeight` with `Math.max(10, ...)` clamping (lines 441-446).
+**Resolution**: Panel position is clamped to viewport on all sides.
+
+### Bug 5: Data-busy State Stuck on Error
+**Severity**: Medium
+**Description**: If `fetchVideoUrlDirect` callback receives null, the `data-busy` attribute is removed and `busy` is set to false (lines 329-330). But if the GraphQL API call throws synchronously before reaching `.catch()`, the button could stay stuck in busy state.
+**Status**: Partially mitigated — `.catch(function() { cb(null); })` handles async errors in the fetch promise chain.
+**Suggested Fix**: Add a `try/catch` wrapper around the entire `toggleCC` flow, or add a timeout that resets `busy` after 30s.
 
 ---
 
 ## Feature Status
 
-### Implemented (v7.0)
+### Implemented (v7.7)
 
 | Feature | Details |
 |---------|---------|
@@ -368,23 +397,26 @@ PROVIDERS.mistral = {
 | Auto-update from GitHub | `@downloadURL` and `@updateURL` headers set |
 | Dynamic video injection | MutationObserver + retry loop for dynamically loaded videos |
 | `data-x-feature` attributes | Custom data attributes for DOM queries: `cc` (button), `co` (caption overlay), `xcs` (settings panel), `x-gc` (gear menu item), `x-gc-s` (hover style) |
+| URL-encoded query param parsing | `extractTweetIdFromUrl` robustly handles URL-encoded `variables` GET params for tweetId extraction |
+| Fetch API interceptor | `Object.defineProperty` on `unsafeWindow.fetch` + direct-assignment fallback for Firefox |
+| On-demand GraphQL fallback | `fetchVideoUrlDirect` makes a direct API call when interceptors miss the initial graphql request |
+| Per-video URL tracking via `_videoUrls{}` | Video URLs stored in a dict keyed by tweet ID instead of a single global variable |
+| Transcription retry with fallback model | 3 attempts with 1.5s delay + model fallback to `mistral-small-latest` on chat API failure |
 
 ### Proposed / Not Implemented
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Loading spinner on CC button | Proposed | CSS animation on button when `busy=true` instead of just opacity change |
-| Per-video URL tracking | Proposed | Map tweet ID → video URL, fix Bug 1 |
-| Transcription retry | Proposed | Auto-retry on failure (2 attempts + backoff) |
-| Separate translation model | Proposed | Use selected model for translation, or add translation model dropdown |
+| Loading spinner on CC button | Proposed | CSS animation on button when `busy=true` — partially implemented (pulse/spin on `[data-busy]`) |
+| Separate translation model | Proposed | Let user select a different model for translation vs transcription |
 | "Copy Transcript" button | Proposed | Export captions as TXT/SRT from settings panel |
 | Custom translation prompts | Proposed | Let user customize the translation instruction |
 | Multi-segment preview | Proposed | Show current line + faded next line for reading flow |
 | Text shadow on captions | Proposed | Better readability against light video backgrounds |
 | Auto-detect video in viewport | Proposed | Pre-fetch transcription for visible video without clicking |
-| Bounds clamping | Proposed | Prevent settings panel from overflowing viewport |
 | Debug mode toggle | Proposed | Show console logs + `data-x-feature` state on hover |
 | Keyboard shortcuts | Proposed | `Ctrl+Shift+C` to toggle captions on active video |
+| Fetch interceptor dedup | Proposed | Extract shared response handling in fetch wrappers |
 
 ---
 
@@ -474,24 +506,43 @@ Check `_videoUrl` in console:
 
 ## Current Code Structure
 
-| Lines | Section | Description |
-|-------|---------|-------------|
-| 17-21 | IIFE setup | Strict mode, globals: `_videoUrl`, `caps`, `intv`, `busy`, `SKEY` |
-| 23-58 | Providers | `PROVIDERS` object, `loadCustomProv`, `saveCustomProv`, `buildProviders` |
-| 60-76 | Settings | Defaults, migration from old format, `bgCSS` helper |
-| 78-112 | XHR Interception | Monkey-patches `open` and `send` to capture GraphQL responses |
-| 114-131 | CC Button | `mkCC` creates the button, `SVG` constant, `videoPlayer` locator |
-| 133-144 | Toggle | `toggleCC` — on/off logic, triggers transcription |
-| 146-167 | Positioning | `hoverSetup`, `updPos` — tracks controls bar visibility |
-| 169-191 | Gear Menu | `injMenu`, `watchMenu` — MutationObserver for settings menu |
-| 193-318 | Settings Panel | `openSett` — full settings UI with all controls |
-| 320-381 | Transcription | `transcribe`, `handleTranscribe` — API calls + response parsing |
-| 383-410 | Display | `statusMsg`, `showCaps`, `hideCaps`, `ripCaps` — caption overlay |
-| 412-425 | Injection | `inject`, `tryGo`, `init` — bootstrap + MutationObserver |
+|| Lines | Section | Description |
+||-------|---------|-------------|
+|| 17-21 | IIFE setup | Strict mode, globals: `_videoUrls`, `caps`, `intv`, `busy`, `SKEY` |
+|| 23-58 | Providers | `PROVIDERS` object, `loadCustomProv`, `saveCustomProv`, `buildProviders` |
+|| 60-76 | Settings | Defaults, migration from old format, `bgCSS` helper |
+|| 78-87 | Helper | `extractTweetIdFromUrl` — URL-encoded query param parsing for tweetId |
+|| 107-108 | GraphQL constants | `GRAPHQL_TWEET_RESULT_ID`, `X_AUTH_BEARER` |
+|| 110-168 | Fetch interceptor + fallback | `getCookie`, `fetchVideoUrlDirect`, `installFetchInterceptor` |
+|| 170-223 | Fetch override | `Object.defineProperty` on `unsafeWindow.fetch` + direct-assignment fallback |
+|| 225-248 | XHR override | Monkey-patches `XMLHttpRequest.prototype.open`/`send` for XHR-style API calls |
+|| 250-273 | Video URL capture | `captureVideoUrl` — extract best MP4 from GraphQL data |
+|| 275-285 | Tweet ID from DOM | `getTweetId` — walks up from video player to find tweet status link |
+|| 287-337 | CC Button + Toggle | `mkCC`, `videoPlayer`, `toggleCC` — creates button and handles on/off + fallback |
+|| 339-360 | Caption positioning | `hoverSetup`, `updPos` — tracks controls bar visibility |
+|| 362-384 | Gear Menu | `injMenu`, `watchMenu` — MutationObserver for settings menu |
+|| 386-513 | Settings Panel | `openSett` — full settings UI with all controls |
+|| 515-616 | Transcription | `transcribe`, `retryTranscribe`, `handleTranscribe` — API calls + response parsing |
+|| 618-645 | Display | `statusMsg`, `showCaps`, `hideCaps`, `ripCaps` — caption overlay |
+|| 647-670 | Injection + Init | `inject`, `tryGo`, `init` — bootstrap + MutationObserver |
 
 ---
 
 ## Git History (HEAD)
+
+Commit `c824409` — v7.7 (Jun 2 2026):
+- Added `fetchVideoUrlDirect` — on-demand GraphQL fallback when interceptors miss initial API call
+- Added Fetch API interceptor via `Object.defineProperty` on `unsafeWindow.fetch`
+- Refactored `toggleCC` to use fallback path when `_videoUrls[tweetId]` is empty
+- Added transcription retry with model fallback to `mistral-small-latest`
+- Fixed `_videoUrls` global — now a map keyed by tweet ID (was single var)
+- Version: 7.7
+
+Commit `9a909bb` — v7.6 (Jun 2 2026):
+- Fixed tweetId extraction from URL-encoded GET query params
+- Added `extractTweetIdFromUrl()` helper using `decodeURIComponent` + `JSON.parse`
+- Updated all 3 interceptor paths (fetch defineProperty, fetch direct-assign, XHR) to use the new helper
+- Version: 7.6
 
 Commit `0405510` — v7.0 production cleanup:
 - Added editable API Key field in settings

@@ -2,6 +2,8 @@
 
 AI-powered captions for X/Twitter videos. Click the CC button, get real-time captions — no server needed, runs entirely in your browser via Mistral AI.
 
+**Latest version**: v7.7 — GraphQL fallback for Chrome timing + URL-encoding fix
+
 ## Features
 
 - **CC button** in the video controls bar — click to transcribe any video
@@ -90,8 +92,9 @@ To test changes, either:
 
 ```
 x-captions/
-├── x-loader.user.js   # Main userscript (single file)
-└── README.md          # This file
+├── x-loader.user.js   # Main userscript (single file, ~670 lines)
+├── README.md          # End-user docs
+└── AGENTS.md          # Dev reference (X.com DOM, fixes, architecture)
 ```
 
 ## License
