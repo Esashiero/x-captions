@@ -686,8 +686,9 @@
             c.insertBefore(mkCC(), w);
             return;
         }
-        // Fallback: floating CC badge directly on videoPlayer (timeline inline)
-        pl.style.position='relative';
+        // Fallback: attach to videoComponent so React re-renders don't wipe the button
+        var vc = pl.querySelector('[data-testid="videoComponent"]') || pl;
+        vc.style.position='relative';
         pl.appendChild(mkCCFloat());
     }
     var rt=0, pollIntv=null;
