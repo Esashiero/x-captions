@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X.com AI Captions
 // @namespace    local.x-features
-// @version      1.0
+// @version      1.1
 // @description  AI captions for X/Twitter videos. No server needed.
 // @author       Hermes
 // @match        https://x.com/*
@@ -18,7 +18,7 @@
 (function() {
     'use strict';
 
-    var _videoUrls = {}, _videoCaps = {}, _activeTweetId = null, intv = null, busy = false;
+    var _videoUrls = {}, _videoCaps = {}, _activeTweetId = null, intv = null, busy = false, _cleanups = {};
     var SKEY = 'x_captions_settings';
 
     // ── Providers ────────────────────────────────────────
@@ -307,7 +307,7 @@
         if (w.getAttribute('data-on') === '1') {
             w.setAttribute('data-on','0');
             var b=w.querySelector('button'); if(b) b.style.opacity='.5';
-            hideCaps(); if(intv){clearInterval(intv);intv=null;} return;
+            hideCaps(); runCleanup(); return;
         }
         // Deactivate any other active CC buttons first
         var active = document.querySelectorAll('[data-x-feature="cc"][data-on="1"]');
@@ -523,8 +523,17 @@
         }, 100);
     }
 
-    function transcribe(url, tweetId, attempt) {
-        attempt = attempt || 1;
+    function gmFetch(opts) {
+        return new Promise(function(resolve, reject) {
+            GM_xmlhttpRequest({
+                method: opts.method || 'GET', url: opts.url,
+                headers: opts.headers || {}, data: opts.data || null,
+                onload: resolve, onerror: reject, ontimeout: reject
+            });
+        });
+    }
+
+    async function transcribe(url, tweetId) {
         var pv = PROVIDERS[s.provider] || PROVIDERS[DEF.provider];
         var key = pv.key, model = s.model || DEF.model;
         if (!key) { busy=false; statusMsg('No API key set'); return; }
@@ -536,95 +545,89 @@
         parts.push('--'+bd); parts.push('Content-Disposition: form-data; name="file_url"'); parts.push(''); parts.push(url);
         parts.push('--'+bd); parts.push('Content-Disposition: form-data; name="timestamp_granularities"'); parts.push(''); parts.push('segment');
         parts.push('--'+bd+'--');
-        GM_xmlhttpRequest({
-            method:'POST', url:pv.transcribe,
-            headers:{'Authorization':'Bearer '+key,'Content-Type':'multipart/form-data; boundary='+bd},
-            data:parts.join('\r\n'),
-            onload:function(r){ handleTranscribe(r, tweetId); },
-            onerror:function(){ retryTranscribe(url, tweetId, attempt); },
-            ontimeout:function(){ retryTranscribe(url, tweetId, attempt); }
-        });
-    }
 
-    function retryTranscribe(url, tweetId, attempt) {
-        if (!busy) return;
-        if (attempt < 3) {
-            statusMsg('Retrying (attempt ' + (attempt + 1) + ')...');
-            setTimeout(function(){ transcribe(url, tweetId, attempt + 1); }, 1500);
-        } else {
-            busy = false;
-            var w = document.querySelector('[data-x-feature="cc"][data-busy]');
-            if (w) w.removeAttribute('data-busy');
-            statusMsg('API failed after 3 attempts');
+        var r;
+        for (var attempt = 1; attempt <= 3; attempt++) {
+            if (attempt > 1) {
+                statusMsg('Retrying (attempt ' + attempt + ')...');
+                await new Promise(function(r2){ setTimeout(r2, 1500); });
+            }
+            try {
+                r = await gmFetch({
+                    method:'POST', url:pv.transcribe,
+                    headers:{'Authorization':'Bearer '+key,'Content-Type':'multipart/form-data; boundary='+bd},
+                    data:parts.join('\r\n')
+                });
+                break;
+            } catch(e) {
+                if (attempt === 3) {
+                    busy=false;
+                    var w3 = document.querySelector('[data-x-feature="cc"][data-busy]');
+                    if (w3) w3.removeAttribute('data-busy');
+                    statusMsg('API failed after 3 attempts');
+                    return;
+                }
+            }
         }
-    }
 
-    function handleTranscribe(r, tweetId) {
         busy=false;
         var w = document.querySelector('[data-x-feature="cc"][data-busy]');
         if (w) w.removeAttribute('data-busy');
-        if(!tweetId) { statusMsg('No tweet ID'); return; }
+        if (!tweetId) { statusMsg('No tweet ID'); return; }
+
         try {
-            var j=JSON.parse(r.responseText);
+            var j = JSON.parse(r.responseText);
             if (j.segments && j.segments.length) {
-                var raw = j.segments;
+                var raw = j.segments.map(function(s){ return {start:s.start, end:s.end, text:(s.text||'').trim()}; });
                 if (s.lang === 'original') {
-                    _videoCaps[tweetId] = raw.map(function(s){return{start:s.start,end:s.end,text:(s.text||'').trim()};});
+                    _videoCaps[tweetId] = raw;
                     hideCaps(); _activeTweetId = tweetId; showCaps();
                 } else {
                     statusMsg('Translating...');
-                    var txts = raw.map(function(s){return s.text;}).join('\n');
+                    var txts = j.segments.map(function(s){ return s.text; }).join('\n');
                     var target = LANG_MAP[s.lang] || 'English';
-                    var pv = PROVIDERS[s.provider] || PROVIDERS[DEF.provider];
                     if (!pv.chat) {
-                        _videoCaps[tweetId] = raw.map(function(s){return{start:s.start,end:s.end,text:(s.text||'').trim()};});
+                        _videoCaps[tweetId] = raw;
                         hideCaps(); _activeTweetId = tweetId; showCaps();
                         return;
                     }
+                    var didTranslate = false;
                     var translateModel = s.model || 'mistral-small-latest';
-                    GM_xmlhttpRequest({
-                        method:'POST', url:pv.chat,
-                        headers:{'Authorization':'Bearer '+pv.key,'Content-Type':'application/json'},
-                        data:JSON.stringify({model:translateModel,messages:[{role:'user',content:'Translate these sentences to '+target+'. Return ONLY the translations, one per line, preserving the exact number of lines:\n'+txts}]}),
-                        onload:function(r2) {
-                            try {
-                                var t = JSON.parse(r2.responseText);
-                                var tr = t.choices[0].message.content.trim().split('\n');
-                                _videoCaps[tweetId] = raw.map(function(s,i){return{start:s.start,end:s.end,text:(tr[i]||s.text).trim()};});
-                            } catch(e) {
-                                if (translateModel !== 'mistral-small-latest' && s.provider === 'mistral') {
-                                    statusMsg('Model failed, retrying with mistral-small-latest...');
-                                    GM_xmlhttpRequest({
-                                        method:'POST', url:pv.chat,
-                                        headers:{'Authorization':'Bearer '+pv.key,'Content-Type':'application/json'},
-                                        data:JSON.stringify({model:'mistral-small-latest',messages:[{role:'user',content:'Translate these sentences to '+target+'. Return ONLY the translations, one per line, preserving the exact number of lines:\n'+txts}]}),
-                                        onload:function(r3) {
-                                            try {
-                                                var t2 = JSON.parse(r3.responseText);
-                                                var tr2 = t2.choices[0].message.content.trim().split('\n');
-                                                _videoCaps[tweetId] = raw.map(function(s,i){return{start:s.start,end:s.end,text:(tr2[i]||s.text).trim()};});
-                                            } catch(e2) { _videoCaps[tweetId] = raw.map(function(s){return{start:s.start,end:s.end,text:(s.text||'').trim()};}); }
-                                            hideCaps(); showCaps();
-                                        },
-                                        onerror:function(){_videoCaps[tweetId]=raw.map(function(s){return{start:s.start,end:s.end,text:(s.text||'').trim()};});hideCaps();showCaps();}
-                                    });
-                                } else {
-                                    _videoCaps[tweetId] = raw.map(function(s){return{start:s.start,end:s.end,text:(s.text||'').trim()};});
-                                    hideCaps(); showCaps();
-                                }
+                    for (var ti = 0; ti < 2; ti++) {
+                        try {
+                            var rt = await gmFetch({
+                                method:'POST', url:pv.chat,
+                                headers:{'Authorization':'Bearer '+pv.key,'Content-Type':'application/json'},
+                                data:JSON.stringify({model:translateModel,messages:[{role:'user',content:'Translate these sentences to '+target+'. Return ONLY the translations, one per line, preserving the exact number of lines:\n'+txts}]})
+                            });
+                            var tj = JSON.parse(rt.responseText);
+                            var tr = tj.choices[0].message.content.trim().split('\n');
+                            _videoCaps[tweetId] = j.segments.map(function(s,i){ return {start:s.start, end:s.end, text:(tr[i]||s.text).trim()}; });
+                            didTranslate = true;
+                            break;
+                        } catch(e) {
+                            if (ti === 0 && translateModel !== 'mistral-small-latest' && s.provider === 'mistral') {
+                                statusMsg('Model failed, retrying with mistral-small-latest...');
+                                translateModel = 'mistral-small-latest';
+                            } else {
+                                break;
                             }
-                            hideCaps(); showCaps();
-                        },
-                        onerror:function(){_videoCaps[tweetId]=raw.map(function(s){return{start:s.start,end:s.end,text:(s.text||'').trim()};});hideCaps();showCaps();}
-                    });
+                        }
+                    }
+                    if (!didTranslate) _videoCaps[tweetId] = raw;
+                    hideCaps(); _activeTweetId = tweetId; showCaps();
                 }
             } else if (j.text) {
-                _videoCaps[tweetId] = [{start:0,end:120,text:j.text.trim()}]; hideCaps();
-                _activeTweetId = tweetId; showCaps();
+                _videoCaps[tweetId] = [{start:0,end:120,text:j.text.trim()}];
+                hideCaps(); _activeTweetId = tweetId; showCaps();
             } else if (j.segments && j.segments.length === 0) {
                 statusMsg('No speech detected');
-            } else { statusMsg('API error'); }
-        } catch(e) { statusMsg('Parse error'); }
+            } else {
+                statusMsg('API error');
+            }
+        } catch(e) {
+            statusMsg('Parse error');
+        }
     }
 
     // ── Display ─────────────────────────────────────────
@@ -648,15 +651,23 @@
         t.style.cssText='display:inline-block;background:'+bgCSS()+';color:#fff;padding:8px 16px;border-radius:6px;font:'+s.size+'px/1.5 sans-serif;max-width:85%;text-align:center;text-shadow:0 0 3px #000,0 0 5px #000;';
         var c=v.currentTime; for(var i=0;i<caps.length;i++){if(c>=caps[i].start&&c<caps[i].end){t.textContent=caps[i].text;break;}}
         o.appendChild(t); var vc=p.querySelector('[data-testid="videoComponent"]'); if(vc) vc.appendChild(o);
-        if(intv) clearInterval(intv); intv=setInterval(function(){
+        runCleanup(_activeTweetId);
+        var capFn = function() {
             var caps2 = _videoCaps[_activeTweetId]; if(!caps2||!v) return;
             var c=v.currentTime,f='';
             for(var i=0;i<caps2.length;i++){if(c>=caps2[i].start&&c<caps2[i].end){f=caps2[i].text;break;}}
             t.textContent=f;
-        },200);
+        };
+        v.addEventListener('timeupdate', capFn);
+        _cleanups[_activeTweetId] = function() { v.removeEventListener('timeupdate', capFn); };
     }
     function hideCaps(){var p=videoPlayer();if(p) ripCaps(p);}
     function ripCaps(p){var els=p.querySelectorAll('[data-x-feature="co"]');for(var i=0;i<els.length;i++)els[i].remove();}
+    function runCleanup(tweetId) {
+        if (tweetId && _cleanups[tweetId]) { _cleanups[tweetId](); delete _cleanups[tweetId]; }
+        else { for (var k in _cleanups) { _cleanups[k](); } _cleanups = {}; }
+        if (intv) { clearInterval(intv); intv = null; }
+    }
 
     // ── Inject CC button into video players ─────────────
     function inject(pl) {
@@ -687,6 +698,15 @@
             }
         }, 3000);
     }
+    // ── Keyboard shortcut Ctrl+Shift+C to toggle captions ─
+    document.addEventListener('keydown', function(ke) {
+        if (ke.ctrlKey && ke.shiftKey && (ke.key === 'C' || ke.key === 'c')) {
+            var cc = document.querySelector('[data-x-feature="cc"]:not([data-on="1"])');
+            if (!cc) cc = document.querySelector('[data-x-feature="cc"]');
+            if (cc) { var kb = cc.querySelector('button'); if (kb) kb.click(); }
+        }
+    });
+
     function init(){
         // Inject loading animation styles
         if (!document.getElementById('x-cc-s')) {
