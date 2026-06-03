@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         X.com AI Captions
 // @namespace    local.x-features
-// @version      1.2
-// @description  AI captions for X/Twitter videos with auto-mute captions, non-conflicting shortcuts, and self-healing.
+// @version      1.0
+// @description  AI captions for X/Twitter videos. No server needed.
 // @author       Hermes
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -14,31 +14,12 @@
 // @updateURL    https://raw.githubusercontent.com/Esashiero/x-captions/main/x-loader.user.js
 // @run-at       document-start
 // ==/UserScript==
-
+// x-captions — AI captions for X/Twitter videos
 (function() {
     'use strict';
 
-    // ES6 Maps with automatic cache pruning
-    var _videoUrls = new Map();
-    var _videoCaps = new Map();
-    var _activeTweetId = null, intv = null, busy = false, _cleanups = {};
+    var _videoUrls = {}, _videoCaps = {}, _activeTweetId = null, intv = null, busy = false;
     var SKEY = 'x_captions_settings';
-
-    function cacheVideoUrl(tweetId, url) {
-        if (_videoUrls.size >= 150) {
-            var oldestKey = _videoUrls.keys().next().value;
-            _videoUrls.delete(oldestKey);
-        }
-        _videoUrls.set(tweetId, url);
-    }
-
-    function cacheVideoCaps(tweetId, caps) {
-        if (_videoCaps.size >= 50) {
-            var oldestKey = _videoCaps.keys().next().value;
-            _videoCaps.delete(oldestKey);
-        }
-        _videoCaps.set(tweetId, caps);
-    }
 
     // ── Providers ────────────────────────────────────────
     var PROVIDERS = {};
@@ -68,12 +49,11 @@
     buildProviders();
 
     // ── Settings ─────────────────────────────────────────
-    var DEF = {bg:'#000000', bgOp:85, size:'15', lang:'en', provider:'mistral', model:'voxtral-mini-latest', autoMute: false};
+    var DEF = {bg:'#000000', bgOp:85, size:'15', lang:'en', provider:'mistral', model:'voxtral-mini-latest'};
     var s = JSON.parse(localStorage.getItem(SKEY) || JSON.stringify(DEF));
     if (!s.provider) s.provider = DEF.provider;
     if (!s.model) s.model = DEF.model;
     if (s.bgOp === undefined) s.bgOp = DEF.bgOp;
-    if (s.autoMute === undefined) s.autoMute = DEF.autoMute;
     if (s.bg && s.bg.startsWith('rgba')) { s.bg = DEF.bg; s.bgOp = DEF.bgOp; }
 
     var LANG_MAP = {'en':'English','fr':'French','es':'Spanish','de':'German','ja':'Japanese','original':'Original'};
@@ -87,10 +67,15 @@
     }
 
     // ── Helper: extract tweetId from GraphQL URL ────────
+    // X.com uses GET requests with URL-encoded variables in query params:
+    // .../TweetResultByRestId?variables=%7B%22tweetId%22%3A%222061876992514126153%22%2C...
+    // The old regex /tweetId[%22:]+(\d+)/ fails because %3A (URL-encoded ':')
+    // has '3' which isn't in the char class — it captures only '3'.
     function extractTweetIdFromUrl(url) {
         var q = url.indexOf('?');
         if (q < 0) return null;
         var search = url.substring(q + 1);
+        // Find the variables= parameter
         var vm = search.match(/(?:^|&)variables=([^&]+)/);
         if (!vm) return null;
         try {
@@ -102,24 +87,34 @@
     }
 
     // ── Capture video URL from GraphQL responses ─────────
+    // X.com now uses blob URLs for <video> elements (currentSrc = blob:https://x.com/...),
+    // so DOM-based src extraction won't give us the real MP4 URL.
+    // We must intercept the network requests to get the actual video URL.
+    //
+    // CSP note: X.com CSP has a nonce directive which makes 'unsafe-inline' a no-op,
+    // blocking script injection (<script>, javascript: links, eval). But
+    // Object.defineProperty on unsafeWindow is a JavaScript-level property
+    // redefinition — it creates an own property on the page's window that
+    // shadows Window.prototype.fetch. CSP does NOT block this because it's not
+    // inline script execution.
+    //
+    // TIMING NOTE: On Chrome, @run-at document-start doesn't guarantee our code runs
+    // before ESM module scripts. X.com's framework stores a reference to the real
+    // fetch at module init time, so our fetch/XHR interceptors may miss the initial
+    // API call. The fetchVideoUrlDirect fallback handles this by making its own
+    // GraphQL call when the user clicks AI Captions.
+
     var GRAPHQL_TWEET_RESULT_ID = 'SgZWKwvBiOKrSC0QeOGvXw';
     var X_AUTH_BEARER = 'AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs=1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
 
     var W = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
     var origFetch = W.fetch;
 
+    // Override fetch on the page's window via Object.defineProperty
+    // (bypasses Tampermonkey's proxy set trap for unsafeWindow)
     function getCookie(name) {
         var m = document.cookie.match(new RegExp('(?:^| )' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '=([^;]*)'));
         return m ? decodeURIComponent(m[1]) : '';
-    }
-
-    // Dynamically updates GraphQL Query IDs to prevent breaking when X.com updates client assets
-    function updateGraphQLIdFromUrl(url) {
-        var m = url.match(/\/graphql\/([^/]+)\/TweetResultByRestId/);
-        if (m && m[1] && m[1] !== GRAPHQL_TWEET_RESULT_ID) {
-            GRAPHQL_TWEET_RESULT_ID = m[1];
-            console.log('[X-Captions] Dynamically updated GraphQL Query ID to: ' + GRAPHQL_TWEET_RESULT_ID);
-        }
     }
 
     function fetchVideoUrlDirect(tweetId, cb) {
@@ -167,7 +162,7 @@
             if (!r.ok) { cb(null); return; }
             return r.json().then(function(d) {
                 captureVideoUrl(d, tweetId);
-                cb(_videoUrls.get(tweetId) || null);
+                cb(_videoUrls[tweetId] || null);
             });
         }).catch(function() { cb(null); });
     }
@@ -180,7 +175,6 @@
                     var url = typeof u === 'string' ? u : (u && u.url ? u.url : '');
                     var p = origFetch.call(this, u, opts);
                     if (url && url.indexOf('TweetResultByRestId') > -1) {
-                        updateGraphQLIdFromUrl(url);
                         p.then(function(r) {
                             if (!r || !r.clone || !r.ok) return;
                             r.clone().json().then(function(d) {
@@ -202,11 +196,11 @@
                 configurable: true
             });
         } catch(e) {
+            // Object.defineProperty failed — try direct assignment (Firefox)
             try { W.fetch = function(u, opts) {
                 var url = typeof u === 'string' ? u : (u && u.url ? u.url : '');
                 var p = origFetch.call(this, u, opts);
                 if (url && url.indexOf('TweetResultByRestId') > -1) {
-                    updateGraphQLIdFromUrl(url);
                     p.then(function(r) {
                         if (!r || !r.clone || !r.ok) return;
                         r.clone().json().then(function(d) {
@@ -228,6 +222,7 @@
     }
     installFetchInterceptor();
 
+    // Also keep the XHR interceptor as a secondary path (some X.com API calls still use XHR)
     var ox = W.XMLHttpRequest.prototype.open;
     W.XMLHttpRequest.prototype.open = function(m, u) {
         this._xurl = typeof u === 'string' ? u : '';
@@ -237,7 +232,6 @@
     W.XMLHttpRequest.prototype.send = function(b) {
         var xhr = this;
         if (xhr._xurl && xhr._xurl.indexOf('TweetResultByRestId') > -1) {
-            updateGraphQLIdFromUrl(xhr._xurl);
             var tweetId = extractTweetIdFromUrl(xhr._xurl);
             xhr.addEventListener('load', function() {
                 try {
@@ -253,6 +247,7 @@
         return os.apply(this, arguments);
     };
 
+    // captureVideoUrl: extract best MP4 from GraphQL data, store in _videoUrls
     function captureVideoUrl(d, tweetId) {
         if (!tweetId) return;
         try {
@@ -273,10 +268,11 @@
                     }
                 }
             }
-            if (best) cacheVideoUrl(tweetId, best);
+            if (best) _videoUrls[tweetId] = best;
         } catch(e) {}
     }
 
+    // ── Get tweet ID from DOM for a video player ────────
     function getTweetId(player) {
         var art = player.closest('article[data-testid="tweet"]');
         if (!art) return null;
@@ -288,7 +284,7 @@
         return null;
     }
 
-    // ── CC button ────────────────────────────────────────
+    // ── CC button (injects into video controls) ─────────
     var SVG = '<svg viewBox="0 0 24 24" aria-hidden="true" class="r-4qtqp9 r-yyyyoo r-dnmrzs r-bnwqim r-lrvibr r-m6rgpd r-z80fyv r-19wmn03"><g><path d="M14.1 2.5c1.103 0 1.991-.001 2.709.058.728.06 1.368.185 1.96.487.941.48 1.707 1.245 2.186 2.185.302.593.428 1.233.487 1.961.059.718.058 1.606.058 2.71V14.1c0 1.103.001 1.991-.058 2.709-.06.728-.185 1.368-.487 1.96-.48.941-1.245 1.707-2.185 2.186-.593.302-1.233.428-1.961.487-.718.059-1.606.058-2.71.058H9.9c-1.103 0-1.991.001-2.709-.058-.728-.06-1.368-.185-1.96-.487-.941-.48-1.707-1.245-2.186-2.185-.302-.593-.428-1.233-.487-1.961-.059-.718-.058-1.606-.058-2.71V9.9c0-1.103-.001-1.991.058-2.709.06-.728.185-1.368.487-1.96.48-.941 1.245-1.707 2.185-2.186.593-.302 1.233-.428 1.961-.487.718-.059 1.606-.058 2.71-.058H14.1zM9.007 8.785c-1.872 0-3.26 1.414-3.26 3.214v.02c0 1.846 1.42 3.196 3.187 3.196v-.003h.003c1.369 0 2.154-.592 2.737-1.394l-1.22-.87c-.304.443-.813.736-1.39.736-.93 0-1.685-.755-1.685-1.685s.754-1.684 1.684-1.684c.558 0 1.05.275 1.357.695l1.207-.935c-.545-.76-1.36-1.29-2.62-1.29zm6.582 0c-1.872 0-3.259 1.414-3.259 3.214v.02c0 1.846 1.422 3.196 3.186 3.196 1.368 0 2.154-.592 2.738-1.395l-1.22-.87c-.305.443-.813.736-1.39.736-.93 0-1.684-.756-1.684-1.686 0-.93.755-1.684 1.684-1.684.56 0 1.052.274 1.357.694l1.21-.935c-.547-.76-1.36-1.29-2.622-1.29z"/></g></svg>';
 
     function mkCC() {
@@ -307,23 +303,13 @@
         return w.closest('[data-testid="videoPlayer"]');
     }
 
-    // Identifies the active playing/hovered video player in view
-    function getFocusedVideoPlayer() {
-        var vids = document.querySelectorAll('[data-testid="videoPlayer"] video');
-        for (var i = 0; i < vids.length; i++) {
-            if (!vids[i].paused) {
-                return vids[i].closest('[data-testid="videoPlayer"]');
-            }
-        }
-        return videoPlayer();
-    }
-
     function toggleCC(w) {
         if (w.getAttribute('data-on') === '1') {
             w.setAttribute('data-on','0');
             var b=w.querySelector('button'); if(b) b.style.opacity='.5';
-            hideCaps(); runCleanup(); return;
+            hideCaps(); if(intv){clearInterval(intv);intv=null;} return;
         }
+        // Deactivate any other active CC buttons first
         var active = document.querySelectorAll('[data-x-feature="cc"][data-on="1"]');
         for(var i=0;i<active.length;i++) {
             active[i].setAttribute('data-on','0');
@@ -338,15 +324,16 @@
         if(!tweetId){w.setAttribute('data-on','0');return;}
         _activeTweetId = tweetId;
 
-        if(_videoCaps.has(tweetId)){ hideCaps(); showCaps(); return; }
-        if(busy){statusMsg('Working...'); return;}
+        // Per-video caps check
+        if(_videoCaps[tweetId]){ hideCaps(); showCaps(); return; }
+        if(busy){statusMsg('Working...');return;}
 
-        var url = _videoUrls.get(tweetId);
+        var url = _videoUrls[tweetId];
         if (!url) {
             busy=true; w.setAttribute('data-busy','1'); statusMsg('Fetching video data...');
             fetchVideoUrlDirect(tweetId, function(newUrl) {
                 if (newUrl) {
-                    cacheVideoUrl(tweetId, newUrl);
+                    _videoUrls[tweetId] = newUrl;
                     statusMsg('Transcribing...');
                     transcribe(newUrl, tweetId);
                 } else {
@@ -383,25 +370,6 @@
         for(var i=0;i<els.length;i++) els[i].style.bottom=show?'52px':'8px';
     }
 
-    // Setup listener to automatically trigger captions if a video plays muted
-    function setupAutoMute(pl) {
-        var vid = pl.querySelector('video');
-        if (!vid) return;
-        if (vid._autoMuteSetup) return;
-        vid._autoMuteSetup = true;
-
-        var checkMute = function() {
-            if (s.autoMute && vid.muted && !vid.paused) {
-                var cc = pl.querySelector('[data-x-feature="cc"]');
-                if (cc && cc.getAttribute('data-on') !== '1' && !busy) {
-                    toggleCC(cc);
-                }
-            }
-        };
-        vid.addEventListener('play', checkMute);
-        vid.addEventListener('volumechange', checkMute);
-    }
-
     // ── Inject "Captions" item into gear menu ───────────
     function injMenu() {
         var mc = document.querySelector('[role="dialog"].r-tskmnb, [role="menu"].r-tskmnb');
@@ -415,7 +383,7 @@
             document.head.appendChild(st);
         }
         var svg = ci.querySelector('svg');
-        if (svg) svg.innerHTML = '<g><path d="M9.007 8.785c1.26 0 2.075.53 2.62 1.29l-1.207.935c-.306-.42-.799-.695-1.357-.695-.93 0-1.684.754-1.684 1.684 0 .93.755 1.684 1.684 1.684.578 0 1.087-.292 1.39-.735l1.22.87c-.582.802-1.367 1.394-2.736 1.394h-.002l-.002.003c-1.766 0-3.187-1.35-3.187-3.187s1.421-3.186 3.187-3.186z"/></g>';
+        if (svg) svg.innerHTML = '<g><path d="M9.007 8.785c1.26 0 2.075.53 2.62 1.29l-1.207.935c-.306-.42-.799-.695-1.357-.695-.93 0-1.684.754-1.684 1.684 0 .93.755 1.684 1.684 1.684.578 0 1.087-.292 1.39-.735l1.22.87c-.582.802-1.367 1.394-2.736 1.394h-.002l-.002.003c-1.766 0-3.187-1.35-3.187-3.187s1.421-3.186 3.187-3.186zm7.602 0c1.26 0 2.075.53 2.62 1.29l-1.207.935c-.306-.42-.799-.695-1.357-.695-.93 0-1.684.754-1.684 1.684 0 .93.755 1.684 1.684 1.684.578 0 1.087-.292 1.39-.735l1.22.87c-.582.802-1.367 1.394-2.736 1.394h-.002l-.002.003c-1.766 0-3.187-1.35-3.187-3.187s1.421-3.186 3.187-3.186z"/></g>';
         var ts = ci.querySelector('span span'); if (ts) ts.textContent = 'Captions';
         var vs = ci.querySelector('.r-16dba41 span'); if (vs) vs.textContent = '';
         ci.onclick = function(e) { e.stopPropagation(); e.preventDefault(); openSett(); };
@@ -471,12 +439,13 @@
             '<span id="xcs-size-val" style="font-size:11px;color:#aaa;">'+s.size+'px</span></div>'+
             '<div style="margin:6px 0;"><label style="display:block;color:#aaa;font-size:11px;">LANGUAGE</label>'+
             '<select id="xcs-lang" style="width:100%;background:#222;color:#fff;border:1px solid #555;border-radius:4px;padding:4px 6px;margin-top:2px;">'+langs+'</select></div>'+
-            '<div style="margin:8px 0;display:flex;align-items:center;gap:6px;"><input type="checkbox" id="xcs-automute" '+(s.autoMute?'checked':'')+' style="width:14px;height:14px;margin:0;cursor:pointer;"><label for="xcs-automute" style="color:#aaa;font-size:11px;cursor:pointer;user-select:none;">AUTO-CAPTION ON MUTE</label></div>'+
             '<div style="margin-top:10px;display:flex;gap:4px;">'+
             '<button id="xcs-save" style="flex:1;background:#1d9bf0;color:#fff;border:none;border-radius:4px;padding:6px 8px;cursor:pointer;font-size:12px;">Save</button>'+
             '<button id="xcs-close" style="background:#444;color:#fff;border:none;border-radius:4px;padding:6px 8px;cursor:pointer;font-size:12px;">Cancel</button></div>';
 
+        // Append to DOM first so we can measure dimensions
         document.body.appendChild(pan);
+        // Now clamp position to viewport bounds
         var rect = p.getBoundingClientRect();
         var panW = pan.offsetWidth || 270;
         var panH = pan.offsetHeight || 400;
@@ -540,7 +509,6 @@
             s.bgOp = parseInt(document.getElementById('xcs-op').value) || DEF.bgOp;
             s.size = document.getElementById('xcs-size').value || DEF.size;
             s.lang = document.getElementById('xcs-lang').value || 'en';
-            s.autoMute = document.getElementById('xcs-automute').checked;
             localStorage.setItem(SKEY, JSON.stringify(s));
             var ct = document.getElementById('ct');
             if (ct) ct.style.cssText = 'display:inline-block;background:'+bgCSS()+';color:#fff;padding:8px 16px;border-radius:6px;font:'+s.size+'px/1.5 sans-serif;max-width:85%;text-align:center;text-shadow:0 0 3px #000,0 0 5px #000;';
@@ -555,17 +523,8 @@
         }, 100);
     }
 
-    function gmFetch(opts) {
-        return new Promise(function(resolve, reject) {
-            GM_xmlhttpRequest({
-                method: opts.method || 'GET', url: opts.url,
-                headers: opts.headers || {}, data: opts.data || null,
-                onload: resolve, onerror: reject, ontimeout: reject
-            });
-        });
-    }
-
-    async function transcribe(url, tweetId) {
+    function transcribe(url, tweetId, attempt) {
+        attempt = attempt || 1;
         var pv = PROVIDERS[s.provider] || PROVIDERS[DEF.provider];
         var key = pv.key, model = s.model || DEF.model;
         if (!key) { busy=false; statusMsg('No API key set'); return; }
@@ -577,90 +536,95 @@
         parts.push('--'+bd); parts.push('Content-Disposition: form-data; name="file_url"'); parts.push(''); parts.push(url);
         parts.push('--'+bd); parts.push('Content-Disposition: form-data; name="timestamp_granularities"'); parts.push(''); parts.push('segment');
         parts.push('--'+bd+'--');
+        GM_xmlhttpRequest({
+            method:'POST', url:pv.transcribe,
+            headers:{'Authorization':'Bearer '+key,'Content-Type':'multipart/form-data; boundary='+bd},
+            data:parts.join('\r\n'),
+            onload:function(r){ handleTranscribe(r, tweetId); },
+            onerror:function(){ retryTranscribe(url, tweetId, attempt); },
+            ontimeout:function(){ retryTranscribe(url, tweetId, attempt); }
+        });
+    }
 
-        var r;
-        for (var attempt = 1; attempt <= 3; attempt++) {
-            if (attempt > 1) {
-                statusMsg('Retrying (attempt ' + attempt + ')...');
-                await new Promise(function(r2){ setTimeout(r2, 1500); });
-            }
-            try {
-                r = await gmFetch({
-                    method:'POST', url:pv.transcribe,
-                    headers:{'Authorization':'Bearer '+key,'Content-Type':'multipart/form-data; boundary='+bd},
-                    data:parts.join('\r\n')
-                });
-                break;
-            } catch(e) {
-                if (attempt === 3) {
-                    busy=false;
-                    var w3 = document.querySelector('[data-x-feature="cc"][data-busy]');
-                    if (w3) w3.removeAttribute('data-busy');
-                    statusMsg('API failed after 3 attempts');
-                    return;
-                }
-            }
+    function retryTranscribe(url, tweetId, attempt) {
+        if (!busy) return;
+        if (attempt < 3) {
+            statusMsg('Retrying (attempt ' + (attempt + 1) + ')...');
+            setTimeout(function(){ transcribe(url, tweetId, attempt + 1); }, 1500);
+        } else {
+            busy = false;
+            var w = document.querySelector('[data-x-feature="cc"][data-busy]');
+            if (w) w.removeAttribute('data-busy');
+            statusMsg('API failed after 3 attempts');
         }
+    }
 
+    function handleTranscribe(r, tweetId) {
         busy=false;
         var w = document.querySelector('[data-x-feature="cc"][data-busy]');
         if (w) w.removeAttribute('data-busy');
-        if (!tweetId) { statusMsg('No tweet ID'); return; }
-
+        if(!tweetId) { statusMsg('No tweet ID'); return; }
         try {
-            var j = JSON.parse(r.responseText);
+            var j=JSON.parse(r.responseText);
             if (j.segments && j.segments.length) {
-                var raw = j.segments.map(function(s){ return {start:s.start, end:s.end, text:(s.text||'').trim()}; });
+                var raw = j.segments;
                 if (s.lang === 'original') {
-                    cacheVideoCaps(tweetId, raw);
+                    _videoCaps[tweetId] = raw.map(function(s){return{start:s.start,end:s.end,text:(s.text||'').trim()};});
                     hideCaps(); _activeTweetId = tweetId; showCaps();
                 } else {
                     statusMsg('Translating...');
-                    var txts = j.segments.map(function(s){ return s.text; }).join('\n');
+                    var txts = raw.map(function(s){return s.text;}).join('\n');
                     var target = LANG_MAP[s.lang] || 'English';
+                    var pv = PROVIDERS[s.provider] || PROVIDERS[DEF.provider];
                     if (!pv.chat) {
-                        cacheVideoCaps(tweetId, raw);
+                        _videoCaps[tweetId] = raw.map(function(s){return{start:s.start,end:s.end,text:(s.text||'').trim()};});
                         hideCaps(); _activeTweetId = tweetId; showCaps();
                         return;
                     }
-                    var didTranslate = false;
                     var translateModel = s.model || 'mistral-small-latest';
-                    for (var ti = 0; ti < 2; ti++) {
-                        try {
-                            var rt = await gmFetch({
-                                method:'POST', url:pv.chat,
-                                headers:{'Authorization':'Bearer '+pv.key,'Content-Type':'application/json'},
-                                data:JSON.stringify({model:translateModel,messages:[{role:'user',content:'Translate these sentences to '+target+'. Return ONLY the translations, one per line, preserving the exact number of lines:\n'+txts}]})
-                            });
-                            var tj = JSON.parse(rt.responseText);
-                            var tr = tj.choices[0].message.content.trim().split('\n');
-                            var translated = j.segments.map(function(s,i){ return {start:s.start, end:s.end, text:(tr[i]||s.text).trim()}; });
-                            cacheVideoCaps(tweetId, translated);
-                            didTranslate = true;
-                            break;
-                        } catch(e) {
-                            if (ti === 0 && translateModel !== 'mistral-small-latest' && s.provider === 'mistral') {
-                                statusMsg('Model failed, retrying with mistral-small-latest...');
-                                translateModel = 'mistral-small-latest';
-                            } else {
-                                break;
+                    GM_xmlhttpRequest({
+                        method:'POST', url:pv.chat,
+                        headers:{'Authorization':'Bearer '+pv.key,'Content-Type':'application/json'},
+                        data:JSON.stringify({model:translateModel,messages:[{role:'user',content:'Translate these sentences to '+target+'. Return ONLY the translations, one per line, preserving the exact number of lines:\n'+txts}]}),
+                        onload:function(r2) {
+                            try {
+                                var t = JSON.parse(r2.responseText);
+                                var tr = t.choices[0].message.content.trim().split('\n');
+                                _videoCaps[tweetId] = raw.map(function(s,i){return{start:s.start,end:s.end,text:(tr[i]||s.text).trim()};});
+                            } catch(e) {
+                                if (translateModel !== 'mistral-small-latest' && s.provider === 'mistral') {
+                                    statusMsg('Model failed, retrying with mistral-small-latest...');
+                                    GM_xmlhttpRequest({
+                                        method:'POST', url:pv.chat,
+                                        headers:{'Authorization':'Bearer '+pv.key,'Content-Type':'application/json'},
+                                        data:JSON.stringify({model:'mistral-small-latest',messages:[{role:'user',content:'Translate these sentences to '+target+'. Return ONLY the translations, one per line, preserving the exact number of lines:\n'+txts}]}),
+                                        onload:function(r3) {
+                                            try {
+                                                var t2 = JSON.parse(r3.responseText);
+                                                var tr2 = t2.choices[0].message.content.trim().split('\n');
+                                                _videoCaps[tweetId] = raw.map(function(s,i){return{start:s.start,end:s.end,text:(tr2[i]||s.text).trim()};});
+                                            } catch(e2) { _videoCaps[tweetId] = raw.map(function(s){return{start:s.start,end:s.end,text:(s.text||'').trim()};}); }
+                                            hideCaps(); showCaps();
+                                        },
+                                        onerror:function(){_videoCaps[tweetId]=raw.map(function(s){return{start:s.start,end:s.end,text:(s.text||'').trim()};});hideCaps();showCaps();}
+                                    });
+                                } else {
+                                    _videoCaps[tweetId] = raw.map(function(s){return{start:s.start,end:s.end,text:(s.text||'').trim()};});
+                                    hideCaps(); showCaps();
+                                }
                             }
-                        }
-                    }
-                    if (!didTranslate) cacheVideoCaps(tweetId, raw);
-                    hideCaps(); _activeTweetId = tweetId; showCaps();
+                            hideCaps(); showCaps();
+                        },
+                        onerror:function(){_videoCaps[tweetId]=raw.map(function(s){return{start:s.start,end:s.end,text:(s.text||'').trim()};});hideCaps();showCaps();}
+                    });
                 }
             } else if (j.text) {
-                cacheVideoCaps(tweetId, [{start:0,end:120,text:j.text.trim()}]);
-                hideCaps(); _activeTweetId = tweetId; showCaps();
+                _videoCaps[tweetId] = [{start:0,end:120,text:j.text.trim()}]; hideCaps();
+                _activeTweetId = tweetId; showCaps();
             } else if (j.segments && j.segments.length === 0) {
                 statusMsg('No speech detected');
-            } else {
-                statusMsg('API error');
-            }
-        } catch(e) {
-            statusMsg('Parse error');
-        }
+            } else { statusMsg('API error'); }
+        } catch(e) { statusMsg('Parse error'); }
     }
 
     // ── Display ─────────────────────────────────────────
@@ -676,7 +640,7 @@
         var vc=p.querySelector('[data-testid="videoComponent"]'); if(vc) vc.appendChild(o);
     }
     function showCaps() {
-        var caps = _videoCaps.get(_activeTweetId); if(!caps) return;
+        var caps = _videoCaps[_activeTweetId]; if(!caps) return;
         var p=videoPlayer(); if(!p) return; var v=p.querySelector('video'); if(!v) return;
         ripCaps(p); var o=document.createElement('div'); o.setAttribute('data-x-feature','co');
         o.style.cssText='position:absolute;bottom:'+ctrlBottom()+';left:0;right:0;text-align:center;padding:8px 16px;z-index:9999;pointer-events:none;';
@@ -684,23 +648,15 @@
         t.style.cssText='display:inline-block;background:'+bgCSS()+';color:#fff;padding:8px 16px;border-radius:6px;font:'+s.size+'px/1.5 sans-serif;max-width:85%;text-align:center;text-shadow:0 0 3px #000,0 0 5px #000;';
         var c=v.currentTime; for(var i=0;i<caps.length;i++){if(c>=caps[i].start&&c<caps[i].end){t.textContent=caps[i].text;break;}}
         o.appendChild(t); var vc=p.querySelector('[data-testid="videoComponent"]'); if(vc) vc.appendChild(o);
-        runCleanup(_activeTweetId);
-        var capFn = function() {
-            var caps2 = _videoCaps.get(_activeTweetId); if(!caps2||!v) return;
+        if(intv) clearInterval(intv); intv=setInterval(function(){
+            var caps2 = _videoCaps[_activeTweetId]; if(!caps2||!v) return;
             var c=v.currentTime,f='';
             for(var i=0;i<caps2.length;i++){if(c>=caps2[i].start&&c<caps2[i].end){f=caps2[i].text;break;}}
             t.textContent=f;
-        };
-        v.addEventListener('timeupdate', capFn);
-        _cleanups[_activeTweetId] = function() { v.removeEventListener('timeupdate', capFn); };
+        },200);
     }
     function hideCaps(){var p=videoPlayer();if(p) ripCaps(p);}
     function ripCaps(p){var els=p.querySelectorAll('[data-x-feature="co"]');for(var i=0;i<els.length;i++)els[i].remove();}
-    function runCleanup(tweetId) {
-        if (tweetId && _cleanups[tweetId]) { _cleanups[tweetId](); delete _cleanups[tweetId]; }
-        else { for (var k in _cleanups) { _cleanups[k](); } _cleanups = {}; }
-        if (intv) { clearInterval(intv); intv = null; }
-    }
 
     // ── Inject CC button into video players ─────────────
     function inject(pl) {
@@ -711,9 +667,7 @@
         var w=u.parentElement; if(!w) return; var c=w.parentElement; if(!c) return;
         hoverSetup(pl);
         c.insertBefore(mkCC(), w);
-        setupAutoMute(pl);
     }
-
     var rt=0, pollIntv=null;
     function tryGo(){var ps=document.querySelectorAll('[data-testid="videoPlayer"]');var ok=false;for(var i=0;i<ps.length;i++){inject(ps[i]);if(ps[i].querySelector('[data-x-feature="cc"]'))ok=true;}if(!ok&&rt<60){rt++;setTimeout(tryGo,500);}}
     function retryInject(pl, tries) {
@@ -722,8 +676,7 @@
         if (!pl.querySelector('[data-x-feature="cc"]'))
             setTimeout(function(){ retryInject(pl, tries + 1); }, 800);
     }
-
-    // Continuous poll: checks DOM once every 3 seconds for un-injected players
+    // Continuous background poll: every 3 seconds, inject CC on any video player that missed it
     function startPoll() {
         if (pollIntv) return;
         pollIntv = setInterval(function() {
@@ -734,60 +687,23 @@
             }
         }, 3000);
     }
-
-    // Debounced observer trigger to prevent UI lag on scroll
-    var injectTimeout = null;
-    function triggerDebouncedInjection() {
-        if (injectTimeout) return;
-        injectTimeout = setTimeout(function() {
-            injectTimeout = null;
-            var ps = document.querySelectorAll('[data-testid="videoPlayer"]');
-            for(var i=0; i<ps.length; i++){
-                if(!ps[i].querySelector('[data-x-feature="cc"]')) {
-                    retryInject(ps[i], 0);
-                }
-            }
-        }, 150);
-    }
-
-    // ── Keyboard shortcut Alt+Shift+C ───────────────────
-    document.addEventListener('keydown', function(ke) {
-        if (ke.altKey && ke.shiftKey && (ke.key === 'C' || ke.key === 'c' || ke.keyCode === 67)) {
-            ke.preventDefault();
-            ke.stopPropagation();
-            var activePlayer = getFocusedVideoPlayer();
-            if (activePlayer) {
-                var cc = activePlayer.querySelector('[data-x-feature="cc"]');
-                if (cc) toggleCC(cc);
-            }
-        }
-    }, true);
-
     function init(){
+        // Inject loading animation styles
         if (!document.getElementById('x-cc-s')) {
             var st = document.createElement('style'); st.id = 'x-cc-s';
             st.textContent = '[data-x-feature="cc"][data-busy] button{animation:x-cc-pulse 1s ease-in-out infinite}[data-x-feature="cc"][data-busy] button svg{animation:x-cc-spin 2s linear infinite}@keyframes x-cc-pulse{0%,100%{opacity:.5}50%{opacity:1}}@keyframes x-cc-spin{0%{transform:rotate(0)}100%{transform:rotate(360deg)}}';
             document.head.appendChild(st);
         }
         watchMenu();
-
-        // Optimized observer: only scans if DOM additions actually occurred
-        new MutationObserver(function(mutations){
-            var added = false;
-            for (var i = 0; i < mutations.length; i++) {
-                if (mutations[i].addedNodes.length > 0) {
-                    added = true;
-                    break;
-                }
-            }
-            if (added) {
-                triggerDebouncedInjection();
+        new MutationObserver(function(){
+            var ps = document.querySelectorAll('[data-testid="videoPlayer"]');
+            for(var i=0;i<ps.length;i++){
+                if(!ps[i].querySelector('[data-x-feature="cc"]'))
+                    retryInject(ps[i], 0);
             }
         }).observe(document.body,{childList:true,subtree:true});
-
         tryGo();
         startPoll();
-        console.log('[X-Captions] Use Alt+Shift+C to toggle captions on the active playing video.');
     }
     if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',init); else init();
 })();
