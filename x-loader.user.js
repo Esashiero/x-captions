@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X.com AI Captions
 // @namespace    local.x-features
-// @version      7.12
+// @version      7.13
 // @description  AI captions for X/Twitter videos. No server needed.
 // @author       Hermes
 // @match        https://x.com/*
@@ -15,8 +15,9 @@
 // @run-at       document-start
 // ==/UserScript==
 // x-captions — AI captions for X/Twitter videos
+// v7.13: remove floating badge, restore normal controls-bar CC button (matching v7.7 behaviour)
 // v7.11: per-video caption storage, fix showing wrong captions on different videos
-// v7.10: fix floating badge position (videoPlayer parent), show 'No speech detected' for silent videos
+// v7.10: show 'No speech detected' for silent videos
 // v7.7: fetchVideoUrlDirect fallback for Chrome timing + per-video URL tracking
 // v7.6: fix tweetId extraction from URL-encoded GET params
 (function() {
@@ -663,33 +664,14 @@
     function ripCaps(p){var els=p.querySelectorAll('[data-x-feature="co"]');for(var i=0;i<els.length;i++)els[i].remove();}
 
     // ── Inject CC button into video players ─────────────
-    // Floating CC badge for inline timeline videos (no visible controls bar)
-    function mkCCFloat() {
-        var w = document.createElement('div');
-        w.setAttribute('data-x-feature','cc'); w.setAttribute('data-on','0');
-        w.style.cssText='position:absolute;bottom:8px;right:8px;z-index:9999;';
-        var b = document.createElement('button');
-        b.setAttribute('aria-label','AI Captions');
-        b.style.cssText='width:34px;height:34px;border-radius:50%;background:rgba(0,0,0,0.65);border:1px solid rgba(255,255,255,0.25);cursor:pointer;display:flex;align-items:center;justify-content:center;opacity:0.55;transition:opacity .2s,background .2s;';
-        b.onmouseenter=function(){b.style.opacity='1';b.style.background='rgba(0,0,0,0.85)';};
-        b.onmouseleave=function(){b.style.opacity='0.55';b.style.background='rgba(0,0,0,0.65)';};
-        var n=document.createElement('div');
-        n.innerHTML='<svg viewBox="0 0 24 24" width="18" height="18" fill="#fff"><g><path d="M9.007 8.785c1.26 0 2.075.53 2.62 1.29l-1.207.935c-.306-.42-.799-.695-1.357-.695-.93 0-1.684.754-1.684 1.684 0 .93.755 1.684 1.684 1.684.578 0 1.087-.292 1.39-.735l1.22.87c-.582.802-1.367 1.394-2.736 1.394h-.002l-.002.003c-1.766 0-3.187-1.35-3.187-3.187s1.421-3.186 3.187-3.186zm7.602 0c1.26 0 2.075.53 2.62 1.29l-1.207.935c-.306-.42-.799-.695-1.357-.695-.93 0-1.684.754-1.684 1.684 0 .93.755 1.684 1.684 1.684.578 0 1.087-.292 1.39-.735l1.22.87c-.582.802-1.367 1.394-2.736 1.394h-.002l-.002.003c-1.766 0-3.187-1.35-3.187-3.187s1.421-3.186 3.187-3.186z"/></g></svg>';
-        b.appendChild(n); b.onclick=function(e){e.stopPropagation();toggleCC(w);}; w.appendChild(b); return w;
-    }
     function inject(pl) {
         if (pl.querySelector('[data-x-feature="cc"]')) return;
+        if (pl.querySelector('[data-testid="captions"]')) return;
         var u=pl.querySelector('[aria-label="Unmute"]')||pl.querySelector('[aria-label="Mute"]');
-        if (u) {
-            var w=u.parentElement; if(!w) return; var c=w.parentElement; if(!c) return;
-            hoverSetup(pl);
-            c.insertBefore(mkCC(), w);
-            return;
-        }
-        // Fallback: attach to videoComponent so React re-renders don't wipe the button
-        var vc = pl.querySelector('[data-testid="videoComponent"]') || pl;
-        vc.style.position='relative';
-        pl.appendChild(mkCCFloat());
+        if (!u) return;
+        var w=u.parentElement; if(!w) return; var c=w.parentElement; if(!c) return;
+        hoverSetup(pl);
+        c.insertBefore(mkCC(), w);
     }
     var rt=0, pollIntv=null;
     function tryGo(){var ps=document.querySelectorAll('[data-testid="videoPlayer"]');var ok=false;for(var i=0;i<ps.length;i++){inject(ps[i]);if(ps[i].querySelector('[data-x-feature="cc"]'))ok=true;}if(!ok&&rt<60){rt++;setTimeout(tryGo,500);}}
