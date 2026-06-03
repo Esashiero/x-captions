@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X.com AI Captions
 // @namespace    local.x-features
-// @version      7.13
+// @version      1.0
 // @description  AI captions for X/Twitter videos. No server needed.
 // @author       Hermes
 // @match        https://x.com/*
@@ -15,11 +15,6 @@
 // @run-at       document-start
 // ==/UserScript==
 // x-captions — AI captions for X/Twitter videos
-// v7.13: remove floating badge, restore normal controls-bar CC button (matching v7.7 behaviour)
-// v7.11: per-video caption storage, fix showing wrong captions on different videos
-// v7.10: show 'No speech detected' for silent videos
-// v7.7: fetchVideoUrlDirect fallback for Chrome timing + per-video URL tracking
-// v7.6: fix tweetId extraction from URL-encoded GET params
 (function() {
     'use strict';
 
@@ -36,7 +31,7 @@
 
     function buildProviders() {
         PROVIDERS = {
-            mistral: {name:'Mistral AI', key:'dGjgnYE6kcY5aTFjExd5lD5DAMN1U1ld',
+            mistral: {name:'Mistral AI', key:'',  // Set your API key in Settings → AI Captions
                 models:{'voxtral-mini-latest':'Voxtral Mini','voxtral-latest':'Voxtral'},
                 transcribe:'https://api.mistral.ai/v1/audio/transcriptions',
                 chat:'https://api.mistral.ai/v1/chat/completions'}
