@@ -1,13 +1,12 @@
 // ==UserScript==
 // @name         X.com AI Captions
 // @namespace    local.x-features
-// @version      1.2
-// @description  AI captions for X/Twitter videos with auto-mute captions, non-conflicting shortcuts, and self-healing.
+// @version      1.3
+// @description  AI captions for X/Twitter videos. Removed fetch/XHR interceptors (broke page load). Uses on-demand GraphQL instead.
 // @author       Hermes
 // @match        https://x.com/*
 // @match        https://twitter.com/*
 // @grant        GM_xmlhttpRequest
-// @grant        unsafeWindow
 // @connect      api.mistral.ai
 // @connect      *
 // @downloadURL  https://raw.githubusercontent.com/Esashiero/x-captions/main/x-loader.user.js
@@ -21,7 +20,7 @@
     // ES6 Maps with automatic cache pruning
     var _videoUrls = new Map();
     var _videoCaps = new Map();
-    var _activeTweetId = null, intv = null, busy = false, _cleanups = {};
+    var _activeTweetId = null, busy = false, _cleanups = {};
     var SKEY = 'x_captions_settings';
 
     function cacheVideoUrl(tweetId, url) {
@@ -86,39 +85,31 @@
         return 'rgba('+r+','+g+','+b+','+o+')';
     }
 
-    // ── Helper: extract tweetId from GraphQL URL ────────
-    function extractTweetIdFromUrl(url) {
-        var q = url.indexOf('?');
-        if (q < 0) return null;
-        var search = url.substring(q + 1);
-        var vm = search.match(/(?:^|&)variables=([^&]+)/);
-        if (!vm) return null;
-        try {
-            var s = decodeURIComponent(vm[1]);
-            var vars = JSON.parse(s);
-            if (vars && vars.tweetId) return vars.tweetId;
-        } catch(e) {}
-        return null;
-    }
+    // ── GraphQL video URL fetch (on-demand) ──────────────
+    // WARNING: Do NOT use Object.defineProperty or unsafeWindow to wrap window.fetch.
+    // Tampermonkey's cross-context sandbox causes "Permission denied to access property 'bind'"
+    // errors in X.com's React bundle, breaking page load entirely.
+    // Instead, we make a direct GraphQL call via GM_xmlhttpRequest when the user clicks CC.
 
-    // ── Capture video URL from GraphQL responses ─────────
     var GRAPHQL_TWEET_RESULT_ID = 'SgZWKwvBiOKrSC0QeOGvXw';
     var X_AUTH_BEARER = 'AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs=1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
-
-    var W = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
-    var origFetch = W.fetch;
 
     function getCookie(name) {
         var m = document.cookie.match(new RegExp('(?:^| )' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '=([^;]*)'));
         return m ? decodeURIComponent(m[1]) : '';
     }
 
-    // Dynamically updates GraphQL Query IDs to prevent breaking when X.com updates client assets
-    function updateGraphQLIdFromUrl(url) {
-        var m = url.match(/\/graphql\/([^/]+)\/TweetResultByRestId/);
-        if (m && m[1] && m[1] !== GRAPHQL_TWEET_RESULT_ID) {
-            GRAPHQL_TWEET_RESULT_ID = m[1];
-            console.log('[X-Captions] Dynamically updated GraphQL Query ID to: ' + GRAPHQL_TWEET_RESULT_ID);
+    // Self-healing: read the current GraphQL Query ID from the page's scripts on each load
+    function discoverGraphQLId() {
+        // X.com embeds the GraphQL ID map in <script> tags with nonce
+        var scripts = document.querySelectorAll('script[nonce]');
+        for (var i = 0; i < scripts.length; i++) {
+            var m = scripts[i].textContent.match(/TweetResultByRestId["']:\s*["']([a-zA-Z0-9_-]+)["']/);
+            if (m) {
+                GRAPHQL_TWEET_RESULT_ID = m[1];
+                console.log('[X-Captions] Discovered GraphQL ID: ' + GRAPHQL_TWEET_RESULT_ID);
+                return;
+            }
         }
     }
 
@@ -156,102 +147,26 @@
             '&features=' + encodeURIComponent(JSON.stringify(features));
 
         var ct0 = getCookie('ct0');
-        origFetch(url, {
+        GM_xmlhttpRequest({
+            method: 'GET',
+            url: url,
             headers: {
                 'authorization': 'Bearer ' + X_AUTH_BEARER,
                 'x-csrf-token': ct0,
                 'x-twitter-auth-type': 'OAuth2Session',
                 'x-twitter-client-language': 'en'
-            }
-        }).then(function(r) {
-            if (!r.ok) { cb(null); return; }
-            return r.json().then(function(d) {
-                captureVideoUrl(d, tweetId);
-                cb(_videoUrls.get(tweetId) || null);
-            });
-        }).catch(function() { cb(null); });
-    }
-
-    function installFetchInterceptor() {
-        if (!origFetch) return;
-        try {
-            Object.defineProperty(W, 'fetch', {
-                value: function(u, opts) {
-                    var url = typeof u === 'string' ? u : (u && u.url ? u.url : '');
-                    var p = origFetch.call(this, u, opts);
-                    if (url && url.indexOf('TweetResultByRestId') > -1) {
-                        updateGraphQLIdFromUrl(url);
-                        p.then(function(r) {
-                            if (!r || !r.clone || !r.ok) return;
-                            r.clone().json().then(function(d) {
-                                try {
-                                    var tid = extractTweetIdFromUrl(url);
-                                    var res = d.data && d.data.tweetResult && d.data.tweetResult.result;
-                                    if (!res) return;
-                                    if (res.__typename === 'TweetWithVisibilityResults') res = res.tweet;
-                                    if (!tid && res.legacy && res.legacy.conversation_id_str) tid = res.legacy.conversation_id_str;
-                                    if (!tid) return;
-                                    captureVideoUrl(d, tid);
-                                } catch(e) {}
-                            }).catch(function(){});
-                        }).catch(function(){});
-                    }
-                    return p;
-                },
-                writable: true,
-                configurable: true
-            });
-        } catch(e) {
-            try { W.fetch = function(u, opts) {
-                var url = typeof u === 'string' ? u : (u && u.url ? u.url : '');
-                var p = origFetch.call(this, u, opts);
-                if (url && url.indexOf('TweetResultByRestId') > -1) {
-                    updateGraphQLIdFromUrl(url);
-                    p.then(function(r) {
-                        if (!r || !r.clone || !r.ok) return;
-                        r.clone().json().then(function(d) {
-                            try {
-                                var tid = extractTweetIdFromUrl(url);
-                                var res = d.data && d.data.tweetResult && d.data.tweetResult.result;
-                                if (!res) return;
-                                if (res.__typename === 'TweetWithVisibilityResults') res = res.tweet;
-                                if (!tid && res.legacy && res.legacy.conversation_id_str) tid = res.legacy.conversation_id_str;
-                                if (!tid) return;
-                                captureVideoUrl(d, tid);
-                            } catch(e) {}
-                        }).catch(function(){});
-                    }).catch(function(){});
-                }
-                return p;
-            }; } catch(e2) {}
-        }
-    }
-    installFetchInterceptor();
-
-    var ox = W.XMLHttpRequest.prototype.open;
-    W.XMLHttpRequest.prototype.open = function(m, u) {
-        this._xurl = typeof u === 'string' ? u : '';
-        return ox.apply(this, arguments);
-    };
-    var os = W.XMLHttpRequest.prototype.send;
-    W.XMLHttpRequest.prototype.send = function(b) {
-        var xhr = this;
-        if (xhr._xurl && xhr._xurl.indexOf('TweetResultByRestId') > -1) {
-            updateGraphQLIdFromUrl(xhr._xurl);
-            var tweetId = extractTweetIdFromUrl(xhr._xurl);
-            xhr.addEventListener('load', function() {
+            },
+            onload: function(r) {
+                if (r.status !== 200) { cb(null); return; }
                 try {
-                    var d = JSON.parse(xhr.responseText);
-                    var res = d.data && d.data.tweetResult && d.data.tweetResult.result;
-                    if (!res) return;
-                    if (res.__typename === 'TweetWithVisibilityResults') res = res.tweet;
-                    if (!tweetId && res.legacy && res.legacy.conversation_id_str) tweetId = res.legacy.conversation_id_str;
+                    var d = JSON.parse(r.responseText);
                     captureVideoUrl(d, tweetId);
-                } catch(e) {}
-            });
-        }
-        return os.apply(this, arguments);
-    };
+                    cb(_videoUrls.get(tweetId) || null);
+                } catch(e) { cb(null); }
+            },
+            onerror: function() { cb(null); }
+        });
+    }
 
     function captureVideoUrl(d, tweetId) {
         if (!tweetId) return;
@@ -352,7 +267,7 @@
                 } else {
                     busy=false;
                     w.removeAttribute('data-busy');
-                    statusMsg('No video data yet');
+                    statusMsg('No video data yet. Try clicking the video to play it first, then click AI Captions.');
                 }
             });
             return;
@@ -568,7 +483,7 @@
     async function transcribe(url, tweetId) {
         var pv = PROVIDERS[s.provider] || PROVIDERS[DEF.provider];
         var key = pv.key, model = s.model || DEF.model;
-        if (!key) { busy=false; statusMsg('No API key set'); return; }
+        if (!key) { busy=false; statusMsg('No API key set. Open Settings → AI Captions to set one.'); return; }
         if (!pv.transcribe) { busy=false; statusMsg('No transcribe URL'); return; }
 
         var bd = '----FB'+Math.random().toString(36).slice(2);
@@ -699,7 +614,6 @@
     function runCleanup(tweetId) {
         if (tweetId && _cleanups[tweetId]) { _cleanups[tweetId](); delete _cleanups[tweetId]; }
         else { for (var k in _cleanups) { _cleanups[k](); } _cleanups = {}; }
-        if (intv) { clearInterval(intv); intv = null; }
     }
 
     // ── Inject CC button into video players ─────────────
@@ -764,6 +678,9 @@
     }, true);
 
     function init(){
+        // Discover GraphQL ID from page scripts
+        setTimeout(discoverGraphQLId, 100);
+
         if (!document.getElementById('x-cc-s')) {
             var st = document.createElement('style'); st.id = 'x-cc-s';
             st.textContent = '[data-x-feature="cc"][data-busy] button{animation:x-cc-pulse 1s ease-in-out infinite}[data-x-feature="cc"][data-busy] button svg{animation:x-cc-spin 2s linear infinite}@keyframes x-cc-pulse{0%,100%{opacity:.5}50%{opacity:1}}@keyframes x-cc-spin{0%{transform:rotate(0)}100%{transform:rotate(360deg)}}';
@@ -787,7 +704,7 @@
 
         tryGo();
         startPoll();
-        console.log('[X-Captions] Use Alt+Shift+C to toggle captions on the active playing video.');
+        console.log('[X-Captions] v1.3 loaded — Use Alt+Shift+C to toggle captions on the active playing video.');
     }
     if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',init); else init();
 })();
