@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         X.com AI Captions
 // @namespace    local.x-features
-// @version      1.3
-// @description  AI captions for X/Twitter videos. Removed fetch/XHR interceptors (broke page load). Uses on-demand GraphQL instead.
+// @version      1.4
+// @description  AI captions for X/Twitter videos. Handles quoted tweets + translates existing native subtitles.
 // @author       Hermes
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -67,6 +67,7 @@
     buildProviders();
 
     // ── Settings ─────────────────────────────────────────
+    var KKEY = 'x_captions_api_keys';
     var DEF = {bg:'#000000', bgOp:85, size:'15', lang:'en', provider:'mistral', model:'voxtral-mini-latest', autoMute: false};
     var s = JSON.parse(localStorage.getItem(SKEY) || JSON.stringify(DEF));
     if (!s.provider) s.provider = DEF.provider;
@@ -74,6 +75,22 @@
     if (s.bgOp === undefined) s.bgOp = DEF.bgOp;
     if (s.autoMute === undefined) s.autoMute = DEF.autoMute;
     if (s.bg && s.bg.startsWith('rgba')) { s.bg = DEF.bg; s.bgOp = DEF.bgOp; }
+
+    function loadKeys() { try { return JSON.parse(localStorage.getItem(KKEY)) || {}; } catch(e) { return {}; } }
+    function saveKey(providerId, key) {
+        var k = loadKeys();
+        if (key) k[providerId] = key; else delete k[providerId];
+        localStorage.setItem(KKEY, JSON.stringify(k));
+        if (PROVIDERS[providerId]) PROVIDERS[providerId].key = key || '';
+    }
+    // Restore persisted keys into providers at startup (built-ins + customs)
+    (function restoreKeys() {
+        var k = loadKeys();
+        for (var pid in k) {
+            if (PROVIDERS[pid]) PROVIDERS[pid].key = k[pid];
+            else if (pid.indexOf('cust_') === 0 && PROVIDERS[pid]) PROVIDERS[pid].key = k[pid];
+        }
+    })();
 
     var LANG_MAP = {'en':'English','fr':'French','es':'Spanish','de':'German','ja':'Japanese','original':'Original'};
 
@@ -203,6 +220,26 @@
         return null;
     }
 
+    // For quoted tweets: the video player sits inside the quote box, but the
+    // first /status/ link found is often the OUTER tweet, not the one holding
+    // the video. Walk up to the closest quoted-tweet container and read the
+    // link inside it; fall back to any link in the article.
+    function getTweetIdForPlayer(player) {
+        // The player's own article-like ancestor that contains a status link
+        var scope = player;
+        while (scope && scope !== document.body) {
+            var own = scope.querySelector ? scope.querySelectorAll('a[href*="/status/"]') : [];
+            if (own.length) {
+                for (var i = 0; i < own.length; i++) {
+                    var m = own[i].href.match(/\/status\/(\d+)/);
+                    if (m) return m[1];
+                }
+            }
+            scope = scope.parentElement;
+        }
+        return getTweetId(player);
+    }
+
     // ── CC button ────────────────────────────────────────
     var SVG = '<svg viewBox="0 0 24 24" aria-hidden="true" class="r-4qtqp9 r-yyyyoo r-dnmrzs r-bnwqim r-lrvibr r-m6rgpd r-z80fyv r-19wmn03"><g><path d="M14.1 2.5c1.103 0 1.991-.001 2.709.058.728.06 1.368.185 1.96.487.941.48 1.707 1.245 2.186 2.185.302.593.428 1.233.487 1.961.059.718.058 1.606.058 2.71V14.1c0 1.103.001 1.991-.058 2.709-.06.728-.185 1.368-.487 1.96-.48.941-1.245 1.707-2.185 2.186-.593.302-1.233.428-1.961.487-.718.059-1.606.058-2.71.058H9.9c-1.103 0-1.991.001-2.709-.058-.728-.06-1.368-.185-1.96-.487-.941-.48-1.707-1.245-2.186-2.185-.302-.593-.428-1.233-.487-1.961-.059-.718-.058-1.606-.058-2.71V9.9c0-1.103-.001-1.991.058-2.709.06-.728.185-1.368.487-1.96.48-.941 1.245-1.707 2.185-2.186.593-.302 1.233-.428 1.961-.487.718-.059 1.606-.058 2.71-.058H14.1zM9.007 8.785c-1.872 0-3.26 1.414-3.26 3.214v.02c0 1.846 1.42 3.196 3.187 3.196v-.003h.003c1.369 0 2.154-.592 2.737-1.394l-1.22-.87c-.304.443-.813.736-1.39.736-.93 0-1.685-.755-1.685-1.685s.754-1.684 1.684-1.684c.558 0 1.05.275 1.357.695l1.207-.935c-.545-.76-1.36-1.29-2.62-1.29zm6.582 0c-1.872 0-3.259 1.414-3.259 3.214v.02c0 1.846 1.422 3.196 3.186 3.196 1.368 0 2.154-.592 2.738-1.395l-1.22-.87c-.305.443-.813.736-1.39.736-.93 0-1.684-.756-1.684-1.686 0-.93.755-1.684 1.684-1.684.56 0 1.052.274 1.357.694l1.21-.935c-.547-.76-1.36-1.29-2.622-1.29z"/></g></svg>';
 
@@ -214,6 +251,31 @@
         var n=document.createElement('div'); n.dir='ltr'; n.className='css-146c3p1 r-qvutc0 r-1qd0xha r-q4m81j r-a023e6 r-rjixqe r-b88u0q r-1awozwy r-6koalj r-18u37iz r-16y2uox r-bcqeeo r-1777fci';
         n.style.cssText='color:#fff'; n.innerHTML=SVG;
         b.appendChild(n); b.onclick=function(e){e.stopPropagation();toggleCC(w);}; w.appendChild(b); return w;
+    }
+
+    // ── Native subtitle translation (shared with transcription path) ──
+    function translateSegments(rawCaps, tweetId, done) {
+        var pv = PROVIDERS[s.provider] || PROVIDERS[DEF.provider];
+        if (!pv.key || !pv.chat) { cacheVideoCaps(tweetId, rawCaps); done(rawCaps); return; }
+        var txts = rawCaps.map(function(c){ return c.text; }).join('\n');
+        var target = LANG_MAP[s.lang] || 'English';
+        gmFetch({
+            method:'POST', url:pv.chat,
+            headers:{'Authorization':'Bearer '+pv.key,'Content-Type':'application/json'},
+            data:JSON.stringify({model:'mistral-small-latest',messages:[{role:'user',content:'Translate these sentences to '+target+'. Return ONLY the translations, one per line, preserving the exact number of lines:\n'+txts}]})
+        }).then(function(rt){
+            try {
+                var tj = JSON.parse(rt.responseText);
+                var tr = tj.choices[0].message.content.trim().split('\n');
+                cacheVideoCaps(tweetId, rawCaps.map(function(c,i){ return {start:c.start,end:c.end,text:(tr[i]||c.text).trim()}; }));
+            } catch(e) { cacheVideoCaps(tweetId, rawCaps); }
+            done();
+        }).catch(function(){ cacheVideoCaps(tweetId, rawCaps); done(); });
+    }
+
+    function toggleCC_done(w) {
+        // native-subtitle path completes without the busy flag; keep button lit
+        w.setAttribute('data-on','1');
     }
 
     function videoPlayer() {
@@ -249,12 +311,51 @@
         var b=w.querySelector('button'); if(b) b.style.opacity='1';
 
         var pl = w.closest('[data-testid="videoPlayer"]');
-        var tweetId = getTweetId(pl);
+        var tweetId = getTweetIdForPlayer(pl);
         if(!tweetId){w.setAttribute('data-on','0');return;}
         _activeTweetId = tweetId;
 
-        if(_videoCaps.has(tweetId)){ hideCaps(); showCaps(); return; }
+        if (_videoCaps.has(tweetId)){ hideCaps(); showCaps(); return; }
         if(busy){statusMsg('Working...'); return;}
+
+        // Native captions present? Read them, translate to target language,
+        // skip transcription entirely.
+        var vid = pl.querySelector('video');
+        if (vid && vid.textTracks && vid.textTracks.length > 0) {
+            var track = null;
+            for (var ti2 = 0; ti2 < vid.textTracks.length; ti2++) {
+                if (vid.textTracks[ti2].cues && vid.textTracks[ti2].cues.length) { track = vid.textTracks[ti2]; break; }
+                if (!track) track = vid.textTracks[ti2];
+            }
+            if (track && track.cues && track.cues.length) {
+                busy = true; statusMsg('Reading native subtitles...');
+                try {
+                    track.mode = 'hidden';
+                    var rawCaps = [];
+                    for (var ci2 = 0; ci2 < track.cues.length; ci2++) {
+                        var cue = track.cues[ci2];
+                        rawCaps.push({start: cue.startTime, end: cue.endTime, text: (cue.text||'').replace(/<[^>]*>/g,'').trim()});
+                    }
+                    rawCaps = rawCaps.filter(function(c){ return c.text; });
+                    if (!rawCaps.length) { busy=false; }
+                    else {
+                        cacheVideoCaps(tweetId, rawCaps);
+                        _activeTweetId = tweetId;
+                        // If target lang is 'original' just show them; else translate via chat API
+                        if (s.lang === 'original') {
+                            busy = false; hideCaps(); showCaps();
+                            toggleCC_done(w);
+                            return;
+                        }
+                        statusMsg('Translating native subtitles...');
+                        translateSegments(rawCaps, tweetId, function(finalCaps){
+                            busy = false; hideCaps(); showCaps(); toggleCC_done(w);
+                        });
+                        return;
+                    }
+                } catch(e) { busy = false; /* fall through to transcription */ }
+            }
+        }
 
         var url = _videoUrls.get(tweetId);
         if (!url) {
@@ -447,7 +548,7 @@
                 saveCustomProv(cp);
                 buildProviders();
             } else if (PROVIDERS[pk]) {
-                PROVIDERS[pk].key = document.getElementById('xcs-key').value || PROVIDERS[pk].key;
+                saveKey(pk, document.getElementById('xcs-key').value.trim());
             }
             s.provider = pk || DEF.provider;
             s.model = document.getElementById('xcs-model').value || DEF.model;
