@@ -881,6 +881,7 @@
 
         tryGo();
         startPoll();
+        window.__xcs_open = openSett;
         console.log('[X-Captions] v1.3 loaded — Use Alt+Shift+C to toggle captions on the active playing video.');
     }
     if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',init); else init();
