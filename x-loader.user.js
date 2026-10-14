@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X.com AI Captions
 // @namespace    local.x-features
-// @version      1.4
+// @version      1.5
 // @description  AI captions for X/Twitter videos. Handles quoted tweets + translates existing native subtitles.
 // @author       Hermes
 // @match        https://x.com/*
@@ -191,21 +191,31 @@
             var res = d.data && d.data.tweetResult && d.data.tweetResult.result;
             if (!res) return;
             if (res.__typename === 'TweetWithVisibilityResults') res = res.tweet;
-            if (!res.legacy || !res.legacy.extended_entities) return;
-            var media = res.legacy.extended_entities.media;
-            if (!media) return;
-            var best = null, br = -1;
-            for (var i = 0; i < media.length; i++) {
-                if (media[i].type !== 'video' && media[i].type !== 'animated_gif') continue;
-                var v = media[i].video_info && media[i].video_info.variants;
-                if (!v) continue;
-                for (var j = 0; j < v.length; j++) {
-                    if (v[j].content_type === 'video/mp4' && (v[j].bitrate || 0) > br) {
-                        best = v[j].url; br = v[j].bitrate || 0;
+            // Quoted tweets: the outer tweet has no media, but quoted_status_result does.
+            var candidates = [res];
+            if (res.quoted_status_result && res.quoted_status_result.result) {
+                var q = res.quoted_status_result.result;
+                if (q.__typename === 'TweetWithVisibilityResults') q = q.tweet;
+                candidates.push(q);
+            }
+            for (var ci = 0; ci < candidates.length; ci++) {
+                var c = candidates[ci];
+                if (!c || !c.legacy || !c.legacy.extended_entities) continue;
+                var media = c.legacy.extended_entities.media;
+                if (!media) continue;
+                var best = null, br = -1;
+                for (var i = 0; i < media.length; i++) {
+                    if (media[i].type !== 'video' && media[i].type !== 'animated_gif') continue;
+                    var v = media[i].video_info && media[i].video_info.variants;
+                    if (!v) continue;
+                    for (var j = 0; j < v.length; j++) {
+                        if (v[j].content_type === 'video/mp4' && (v[j].bitrate || 0) > br) {
+                            best = v[j].url; br = v[j].bitrate || 0;
+                        }
                     }
                 }
+                if (best) { cacheVideoUrl(tweetId, best); return; }
             }
-            if (best) cacheVideoUrl(tweetId, best);
         } catch(e) {}
     }
 
@@ -514,7 +524,7 @@
             for (var m in pv.models) {
                 var opt = document.createElement('option');
                 opt.value = m; opt.textContent = pv.models[m];
-                if (m === pv.models) opt.selected = true;
+                if (m === s.model) opt.selected = true;
                 sel.appendChild(opt);
             }
             document.getElementById('xcs-key').value = pv.key || '';
