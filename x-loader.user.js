@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X.com AI Captions
 // @namespace    local.x-features
-// @version      1.7
+// @version      1.8
 // @description  AI captions for X/Twitter videos. Handles quoted tweets + translates existing native subtitles.
 // @author       Hermes
 // @match        https://x.com/*
@@ -501,7 +501,10 @@
             '<span id="xcs-op-val" style="font-size:11px;color:#aaa;min-width:28px;text-align:right;">'+(s.bgOp||85)+'%</span></div></div>'+
             '<div style="margin:6px 0;"><label style="display:block;color:#aaa;font-size:11px;">FONT SIZE (live)</label>'+
             '<input id="xcs-size" type="range" min="10" max="30" value="'+s.size+'" style="width:100%;margin:2px 0;">'+
-            '<span id="xcs-size-val" style="font-size:11px;color:#aaa;">'+s.size+'px</span></div></div>';
+            '<span id="xcs-size-val" style="font-size:11px;color:#aaa;">'+s.size+'px</span></div></div>'+
+'<div style="margin-top:8px;display:flex;gap:4px;">'+
+'<button id="xcs-reset" style="flex:1;background:#444;color:#fff;border:none;border-radius:4px;padding:6px 8px;cursor:pointer;font-size:12px;">Reset style</button>'+
+'<button id="xcs-regen" style="flex:1;background:#f59e0b;color:#000;border:none;border-radius:4px;padding:6px 8px;cursor:pointer;font-size:12px;">Regenerate</button></div>';
 
         document.body.appendChild(pan);
         var rect = p.getBoundingClientRect();
@@ -603,7 +606,39 @@
             if (ct) ct.style.cssText = 'display:inline-block;background:'+bgCSS()+';color:#fff;padding:8px 16px;border-radius:6px;font:'+s.size+'px/1.5 sans-serif;max-width:85%;text-align:center;text-shadow:0 0 3px #000,0 0 5px #000;';
             if (pan.parentNode) pan.remove();
         };
-        document.getElementById('xcs-close').onclick = function() { if (pan.parentNode) pan.remove(); };
+        document.getElementById('xcs-regen').onclick = function() {
+            var tid = _activeTweetId;
+            if (tid) { _videoCaps.delete(tid); _videoUrls.delete(tid); }
+            if (pan.parentNode) pan.remove();
+            var pl = videoPlayer(); if(!pl) return;
+            var cc = pl.querySelector('[data-x-feature="cc"]'); if(cc){ cc.setAttribute('data-on','0'); toggleCC(cc); }
+        };
+        document.getElementById('xcs-reset').onclick = function() {
+            s.bgOp = DEF.bgOp; s.size = DEF.size;
+            var opEl = document.getElementById('xcs-op'); if(opEl){ opEl.value = s.bgOp; }
+            var szEl = document.getElementById('xcs-size'); if(szEl){ szEl.value = s.size; }
+            var ov = document.getElementById('xcs-op-val'); if(ov) ov.textContent = s.bgOp + '%';
+            var sv = document.getElementById('xcs-size-val'); if(sv) sv.textContent = s.size + 'px';
+            var ct = document.getElementById('ct'); if(ct){ ct.style.fontSize = s.size + 'px'; ct.style.background = bgCSS(); }
+        };
+
+        // Preview caption when no active captions
+        var hadCaps = _activeTweetId && _videoCaps.has(_activeTweetId);
+        if (!hadCaps) {
+            var plpv = videoPlayer();
+            if (plpv) {
+                var ovp = document.createElement('div'); ovp.setAttribute('data-x-feature','co'); ovp.id='xcs-preview';
+                ovp.style.cssText='position:absolute;bottom:'+ctrlBottom()+';left:0;right:0;text-align:center;padding:8px 16px;z-index:9999;pointer-events:none;';
+                var tp=document.createElement('div'); tp.id='ct';
+                tp.style.cssText='display:inline-block;background:'+bgCSS()+';color:#fff;padding:8px 16px;border-radius:6px;font:'+s.size+'px/1.5 sans-serif;max-width:85%;text-align:center;text-shadow:0 0 3px #000,0 0 5px #000;';
+                tp.textContent='Preview captions';
+                ovp.appendChild(tp); var vc=plpv.querySelector('[data-testid="videoComponent"]'); if(vc) vc.appendChild(ovp);
+            }
+        }
+
+        document.getElementById('xcs-close').onclick = function() { var pv=document.getElementById('xcs-preview'); if(pv) pv.remove(); if (pan.parentNode) pan.remove(); };
+        var _origSave = document.getElementById('xcs-save').onclick;
+        document.getElementById('xcs-save').onclick = function() { var pv=document.getElementById('xcs-preview'); if(pv) pv.remove(); _origSave(); };
         setTimeout(function() {
             function clkOut(e) {
                 if (!pan.contains(e.target)) { if (pan.parentNode) pan.remove(); document.removeEventListener('mousedown',clkOut,true); }
