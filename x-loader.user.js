@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X.com AI Captions
 // @namespace    local.x-features
-// @version      1.6
+// @version      1.7
 // @description  AI captions for X/Twitter videos. Handles quoted tweets + translates existing native subtitles.
 // @author       Hermes
 // @match        https://x.com/*
@@ -441,7 +441,7 @@
             document.head.appendChild(st);
         }
         var svg = ci.querySelector('svg');
-        if (svg) svg.innerHTML = '<g><path d="M9.007 8.785c1.26 0 2.075.53 2.62 1.29l-1.207.935c-.306-.42-.799-.695-1.357-.695-.93 0-1.684.754-1.684 1.684 0 .93.755 1.684 1.684 1.684.578 0 1.087-.292 1.39-.735l1.22.87c-.582.802-1.367 1.394-2.736 1.394h-.002l-.002.003c-1.766 0-3.187-1.35-3.187-3.187s1.421-3.186 3.187-3.186z"/></g>';
+        if (svg) svg.innerHTML = '<text x="12" y="16" text-anchor="middle" font-size="12" font-weight="700" fill="currentColor">CC</text>';
         var ts = ci.querySelector('span span'); if (ts) ts.textContent = 'Captions';
         var vs = ci.querySelector('.r-16dba41 span'); if (vs) vs.textContent = '';
         ci.onclick = function(e) { e.stopPropagation(); e.preventDefault(); openSett(); };
@@ -488,19 +488,20 @@
             '<div style="display:flex;gap:6px;margin-top:2px;">'+
             '<input type="color" id="xcs-bg-picker" value="'+(s.bg.startsWith('#')?s.bg:'#000000')+'" style="width:36px;height:30px;padding:0;border:1px solid #555;border-radius:4px;background:transparent;cursor:pointer;">'+
             '<input id="xcs-bg" value="'+s.bg+'" style="flex:1;background:#222;color:#fff;border:1px solid #555;border-radius:4px;padding:4px 6px;font:12px monospace;"></div></div>'+
-            '<div style="margin:6px 0;"><label style="display:block;color:#aaa;font-size:11px;">OPACITY</label>'+
+            '<div style="margin:6px 0;"><label style="display:block;color:#aaa;font-size:11px;">LANGUAGE</label>'+
+'<select id="xcs-lang" style="width:100%;background:#222;color:#fff;border:1px solid #555;border-radius:4px;padding:4px 6px;margin-top:2px;">'+langs+'</select></div>'+
+'<div style="margin:8px 0;display:flex;align-items:center;gap:6px;"><input type="checkbox" id="xcs-automute" '+(s.autoMute?'checked':'')+' style="width:14px;height:14px;margin:0;cursor:pointer;"><label for="xcs-automute" style="color:#aaa;font-size:11px;cursor:pointer;user-select:none;">AUTO-CAPTION ON MUTE</label></div>'+
+            '<div style="margin-top:10px;display:flex;gap:4px;">'+
+            '<button id="xcs-save" style="flex:1;background:#1d9bf0;color:#fff;border:none;border-radius:4px;padding:6px 8px;cursor:pointer;font-size:12px;">Save</button>'+
+            '<button id="xcs-close" style="background:#444;color:#fff;border:none;border-radius:4px;padding:6px 8px;cursor:pointer;font-size:12px;">Cancel</button></div>'+
+            '<div style="margin-top:12px;padding-top:10px;border-top:1px solid #444;">'+
+            '<div style="margin:6px 0;"><label style="display:block;color:#aaa;font-size:11px;">OPACITY (live)</label>'+
             '<div style="display:flex;gap:6px;margin-top:2px;align-items:center;">'+
             '<input id="xcs-op" type="range" min="10" max="100" value="'+(s.bgOp||85)+'" style="flex:1;margin:0;">'+
             '<span id="xcs-op-val" style="font-size:11px;color:#aaa;min-width:28px;text-align:right;">'+(s.bgOp||85)+'%</span></div></div>'+
-            '<div style="margin:6px 0;"><label style="display:block;color:#aaa;font-size:11px;">FONT SIZE</label>'+
+            '<div style="margin:6px 0;"><label style="display:block;color:#aaa;font-size:11px;">FONT SIZE (live)</label>'+
             '<input id="xcs-size" type="range" min="10" max="30" value="'+s.size+'" style="width:100%;margin:2px 0;">'+
-            '<span id="xcs-size-val" style="font-size:11px;color:#aaa;">'+s.size+'px</span></div>'+
-            '<div style="margin:6px 0;"><label style="display:block;color:#aaa;font-size:11px;">LANGUAGE</label>'+
-            '<select id="xcs-lang" style="width:100%;background:#222;color:#fff;border:1px solid #555;border-radius:4px;padding:4px 6px;margin-top:2px;">'+langs+'</select></div>'+
-            '<div style="margin:8px 0;display:flex;align-items:center;gap:6px;"><input type="checkbox" id="xcs-automute" '+(s.autoMute?'checked':'')+' style="width:14px;height:14px;margin:0;cursor:pointer;"><label for="xcs-automute" style="color:#aaa;font-size:11px;cursor:pointer;user-select:none;">AUTO-CAPTION ON MUTE</label></div>'+
-            '<div style="margin-top:10px;display:flex;gap:4px;">'+
-            '<button id="xcs-save" style="flex:1;background:#1d9bf0;color:#fff;border:none;border-radius:4px;padding:6px 8px;cursor:pointer;font-size:12px;">Save</button>'+
-            '<button id="xcs-close" style="background:#444;color:#fff;border:none;border-radius:4px;padding:6px 8px;cursor:pointer;font-size:12px;">Cancel</button></div>';
+            '<span id="xcs-size-val" style="font-size:11px;color:#aaa;">'+s.size+'px</span></div></div>';
 
         document.body.appendChild(pan);
         var rect = p.getBoundingClientRect();
@@ -558,7 +559,6 @@
             document.getElementById('xcs-size-val').textContent = this.value + 'px';
             var ct = document.getElementById('ct');
             if (ct) ct.style.fontSize = this.value + 'px';
-            markDirty();
         };
         document.getElementById('xcs-bg-picker').oninput = function() {
             document.getElementById('xcs-bg').value = this.value;
@@ -573,7 +573,6 @@
                 var r=parseInt(bg.slice(1,3),16)||0,g=parseInt(bg.slice(3,5),16)||0,b=parseInt(bg.slice(5,7),16)||0;
                 ct.style.background = 'rgba('+r+','+g+','+b+','+o+')';
             }
-            markDirty();
         };
 
         document.getElementById('xcs-save').onclick = function() {
