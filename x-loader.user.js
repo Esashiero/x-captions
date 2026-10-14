@@ -294,6 +294,26 @@
         return w.closest('[data-testid="videoPlayer"]');
     }
 
+    // Refresh CC button colors based on whether captions are cached
+    function refreshCCColors() {
+        var ps = document.querySelectorAll('[data-testid="videoPlayer"]');
+        for (var i = 0; i < ps.length; i++) {
+            var pl = ps[i];
+            var w = pl.querySelector('[data-x-feature="cc"]');
+            if (!w) continue;
+            var n = w.querySelector('div[dir="ltr"]');
+            if (!n) continue;
+            var tid = getTweetIdForPlayer(pl);
+            if (tid && _videoCaps.has(tid)) {
+                n.style.color = '#4ade80';
+                w.setAttribute('data-cc-state', 'cached');
+            } else {
+                n.style.color = '#f59e0b';
+                w.setAttribute('data-cc-state', 'pending');
+            }
+        }
+    }
+
     // Identifies the active playing/hovered video player in view
     function getFocusedVideoPlayer() {
         var vids = document.querySelectorAll('[data-testid="videoPlayer"] video');
@@ -823,6 +843,7 @@
                 if (!ps[i].querySelector('[data-x-feature="cc"]'))
                     inject(ps[i]);
             }
+            refreshCCColors();
         }, 3000);
     }
 
