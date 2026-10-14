@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X.com AI Captions
 // @namespace    local.x-features
-// @version      1.5
+// @version      1.6
 // @description  AI captions for X/Twitter videos. Handles quoted tweets + translates existing native subtitles.
 // @author       Hermes
 // @match        https://x.com/*
@@ -506,12 +506,32 @@
         var rect = p.getBoundingClientRect();
         var panW = pan.offsetWidth || 270;
         var panH = pan.offsetHeight || 400;
-        var left = Math.max(10, rect.left + rect.width - panW);
+        var left = rect.right + 8;
+        if (left + panW > window.innerWidth - 10) left = rect.left - panW - 8;
+        if (left < 10) left = 10;
         var top = rect.top;
-        if (left + panW > window.innerWidth) left = window.innerWidth - panW - 10;
         if (top + panH > window.innerHeight) top = window.innerHeight - panH - 10;
         pan.style.left = Math.max(10, left) + 'px';
         pan.style.top = Math.max(10, top) + 'px';
+
+        var saveBtn = document.getElementById('xcs-save');
+        saveBtn.disabled = true;
+        saveBtn.style.opacity = '.4';
+        saveBtn.style.cursor = 'not-allowed';
+        var markDirty = function() {
+            saveBtn.disabled = false;
+            saveBtn.style.opacity = '1';
+            saveBtn.style.cursor = 'pointer';
+        };
+        // also mark dirty on any other field edit
+        ['xcs-provider','xcs-key','xcs-bg','xcs-lang','xcs-automute','xcs-cust-name','xcs-cust-trans','xcs-cust-chat','xcs-cust-model'].forEach(function(id){
+            var el = document.getElementById(id);
+            if (!el) return;
+            el.addEventListener(el.tagName === 'SELECT' ? 'change' : 'input', markDirty);
+        });
+        // model select change marks dirty
+        var ms = document.getElementById('xcs-model');
+        if (ms) ms.addEventListener('change', markDirty);
 
         document.getElementById('xcs-provider').onchange = function() {
             var pk = this.value;
@@ -536,12 +556,24 @@
         };
         document.getElementById('xcs-size').oninput = function() {
             document.getElementById('xcs-size-val').textContent = this.value + 'px';
+            var ct = document.getElementById('ct');
+            if (ct) ct.style.fontSize = this.value + 'px';
+            markDirty();
         };
         document.getElementById('xcs-bg-picker').oninput = function() {
             document.getElementById('xcs-bg').value = this.value;
+            markDirty();
         };
         document.getElementById('xcs-op').oninput = function() {
             document.getElementById('xcs-op-val').textContent = this.value + '%';
+            var ct = document.getElementById('ct');
+            if (ct) {
+                var bg = (document.getElementById('xcs-bg').value || '#000000');
+                var o = (parseInt(this.value)||85)/100;
+                var r=parseInt(bg.slice(1,3),16)||0,g=parseInt(bg.slice(3,5),16)||0,b=parseInt(bg.slice(5,7),16)||0;
+                ct.style.background = 'rgba('+r+','+g+','+b+','+o+')';
+            }
+            markDirty();
         };
 
         document.getElementById('xcs-save').onclick = function() {
