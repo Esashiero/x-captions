@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X.com AI Captions
 // @namespace    local.x-features
-// @version      1.9
+// @version      2.0
 // @description  AI captions for X/Twitter videos. Handles quoted tweets + translates existing native subtitles.
 // @author       Hermes
 // @match        https://x.com/*
