@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X.com AI Captions
 // @namespace    local.x-features
-// @version      2.3
+// @version      2.4
 // @description  AI captions for X/Twitter videos. Handles quoted tweets + translates existing native subtitles.
 // @author       Hermes
 // @match        https://x.com/*
@@ -90,7 +90,7 @@
 
     // ── Settings ─────────────────────────────────────────
     var KKEY = 'x_captions_api_keys';
-    var DEF = {bg:'#000000', bgOp:85, size:'15', lang:'en', provider:'mistral', model:'voxtral-mini-transcribe-3', translateModel:'mistral-small-latest', autoMute: false, autoCaption: false};
+    var DEF = {bg:'#000000', bgOp:85, size:'15', lang:'en', provider:'mistral', model:'voxtral-mini-transcribe-3', translateModel:'mistral-small-latest', autoMute: false, autoCaption: false, skipLangs:''};
     var s;
     try { s = JSON.parse(localStorage.getItem(SKEY) || JSON.stringify(DEF)); }
     catch(e) { s = JSON.parse(JSON.stringify(DEF)); }
@@ -100,6 +100,7 @@
     if (s.autoMute === undefined) s.autoMute = DEF.autoMute;
     if (s.autoCaption === undefined) s.autoCaption = DEF.autoCaption;
     if (!s.translateModel) s.translateModel = DEF.translateModel;
+    if (s.skipLangs === undefined) s.skipLangs = DEF.skipLangs;
     if (s.bg && s.bg.startsWith('rgba')) { s.bg = DEF.bg; s.bgOp = DEF.bgOp; }
 
     function loadKeys() {
@@ -364,8 +365,11 @@
         }
         var hasCyrillic = /[\u0400-\u04FF]/.test(sampleText);
         if (hasCyrillic && tl === 'en') tl = 'ru';
+        // Blacklist check: if native lang is in skipLangs, treat as in-target (don't translate)
+        var skipList = (s.skipLangs || '').toLowerCase().split(/[,\s]+/).filter(function(x){return x;});
+        var isSkipped = skipList.indexOf(tl) >= 0;
         var target = (s.lang === 'original') ? tl : s.lang;
-        return {hasNative:true, inTargetLang: (tl === target || s.lang === 'original'), trackLang: tl};
+        return {hasNative:true, inTargetLang: (tl === target || s.lang === 'original' || isSkipped), trackLang: tl, skipped: isSkipped};
     }
 
     function mediaKey(pl) {
@@ -441,7 +445,7 @@
             try {
                 var parsed = JSON.parse(text.trim());
                 if (parsed && Array.isArray(parsed.translations)) {
-                    translations = parsed.translations.map(function(x) { return String(x).trim(); });
+                    translations = parsed.translations.map(function(x, _i) { var t = String(x).trim(); return t || (lines[_i] || ''); });
                 }
             } catch(e) {}
             if (!translations) {
@@ -484,7 +488,7 @@
             try {
                 var parsed = JSON.parse(text.trim());
                 if (parsed && Array.isArray(parsed.translations)) {
-                    translations = parsed.translations.map(function(x) { return String(x).trim(); });
+                    translations = parsed.translations.map(function(x, _i) { var t = String(x).trim(); return t || (lines[_i] || ''); });
                 }
             } catch(e) {}
             // Fallback to plain text line parsing
@@ -885,6 +889,8 @@
             '<input id="xcs-bg" value="'+s.bg+'" style="flex:1;background:#222;color:#fff;border:1px solid #555;border-radius:4px;padding:4px 6px;font:12px monospace;"></div></div>'+
             '<div style="margin:6px 0;"><label style="display:block;color:#aaa;font-size:11px;">LANGUAGE</label>'+
 '<select id="xcs-lang" style="width:100%;background:#222;color:#fff;border:1px solid #555;border-radius:4px;padding:4px 6px;margin-top:2px;">'+langs+'</select></div>'+
+'<div style="margin:6px 0;"><label style="display:block;color:#aaa;font-size:11px;">SKIP TRANSLATION FOR (comma-separated lang codes, e.g. fr,es)</label>'+
+'<input id="xcs-skiplangs" value="'+(s.skipLangs||'')+'" placeholder="fr,es,de" style="width:100%;background:#222;color:#fff;border:1px solid #555;border-radius:4px;padding:4px 6px;font:12px monospace;margin-top:2px;"></div>'+
 '<div style="margin:8px 0;display:flex;align-items:center;gap:6px;"><input type="checkbox" id="xcs-automute" '+(s.autoMute?'checked':'')+' style="width:14px;height:14px;margin:0;cursor:pointer;"><label for="xcs-automute" style="color:#aaa;font-size:11px;cursor:pointer;user-select:none;">AUTO-CAPTION ON MUTE</label></div>'+
 '<div style="margin:8px 0;display:flex;align-items:center;gap:6px;"><input type="checkbox" id="xcs-autocaption" '+(s.autoCaption?'checked':'')+' style="width:14px;height:14px;margin:0;cursor:pointer;"><label for="xcs-autocaption" style="color:#aaa;font-size:11px;cursor:pointer;user-select:none;">AUTO-CAPTION ON VIDEOS WITH SUBS</label></div>'+
             '<div style="margin-top:10px;display:flex;gap:4px;">'+
@@ -924,7 +930,7 @@
             saveBtn.style.cursor = 'pointer';
         };
         // also mark dirty on any other field edit
-        ['xcs-provider','xcs-key','xcs-bg','xcs-lang','xcs-automute','xcs-autocaption','xcs-cust-name','xcs-cust-trans','xcs-cust-chat','xcs-cust-model','xcs-tmodel','xcs-cust-mode'].forEach(function(id){
+        ['xcs-provider','xcs-key','xcs-bg','xcs-lang','xcs-automute','xcs-autocaption','xcs-cust-name','xcs-cust-trans','xcs-cust-chat','xcs-cust-model','xcs-tmodel','xcs-cust-mode','xcs-skiplangs'].forEach(function(id){
             var el = document.getElementById(id);
             if (!el) return;
             el.addEventListener(el.tagName === 'SELECT' ? 'change' : 'input', markDirty);
@@ -1024,6 +1030,7 @@
             s.size = document.getElementById('xcs-size').value || DEF.size;
             s.lang = document.getElementById('xcs-lang').value || 'en';
             s.translateModel = (document.getElementById('xcs-tmodel').value || '').trim() || DEF.translateModel;
+            s.skipLangs = (document.getElementById('xcs-skiplangs').value || '').trim();
             s.autoMute = document.getElementById('xcs-automute').checked;
             s.autoCaption = document.getElementById('xcs-autocaption').checked;
             if (s.lang !== prevLang || s.provider !== prevProv || s.translateModel !== prevTM) {
@@ -1118,6 +1125,7 @@
         if (s.lang && s.lang !== 'original') {
             parts.push('--'+bd); parts.push('Content-Disposition: form-data; name="language"'); parts.push(''); parts.push(s.lang);
         }
+        parts.push('--'+bd); parts.push('Content-Disposition: form-data; name="return_language"'); parts.push(''); parts.push('true');
         parts.push('--'+bd+'--');
 
         var r;
@@ -1153,7 +1161,11 @@
             var j = JSON.parse(r.responseText);
             if (j.segments && j.segments.length) {
                 var raw = j.segments.map(function(s){ return {start:s.start, end:s.end, text:(s.text||'').trim()}; });
-                if (s.lang === 'original') {
+                // Blacklist check: if detected source lang is in skipLangs, skip translation
+                var detectedLang = (j.language || '').toLowerCase().slice(0,2);
+                var skipList2 = (s.skipLangs || '').toLowerCase().split(/[,\s]+/).filter(function(x){return x;});
+                var isSkipped2 = detectedLang && skipList2.indexOf(detectedLang) >= 0;
+                if (s.lang === 'original' || isSkipped2) {
                     cacheVideoCaps(capKey, raw);
                     setCapsInfo(capKey, true);
                     hideCaps(); _activeTweetId = capKey; showCaps();
@@ -1325,7 +1337,7 @@
         uw.__xcs_diag = function() {
             return {version: VERSION, provider: s.provider, model: s.model,
                     translateModel: s.translateModel || 'mistral-small-latest',
-                    lang: s.lang, keySet: !!(PROVIDERS[s.provider] || {}).key,
+                    lang: s.lang, skipLangs: s.skipLangs || '', keySet: !!(PROVIDERS[s.provider] || {}).key,
                     graphqlId: GRAPHQL_TWEET_RESULT_ID, lastError: _lastErr,
                     urls: _videoUrls.size, caps: _videoCaps.size, busy: busyFor};
         };
