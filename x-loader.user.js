@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X.com AI Captions
 // @namespace    local.x-features
-// @version      2.1
+// @version      2.2
 // @description  AI captions for X/Twitter videos. Handles quoted tweets + translates existing native subtitles.
 // @author       Hermes
 // @match        https://x.com/*
@@ -70,7 +70,7 @@
     function buildProviders() {
         PROVIDERS = {
             mistral: {name:'Mistral AI', key:'',  // Set your API key in Settings → AI Captions
-                models:{'voxtral-mini-latest':'Voxtral Mini','voxtral-latest':'Voxtral'},
+                models:{'voxtral-mini-transcribe-3':'Voxtral Mini 3','voxtral-small-transcribe-3':'Voxtral Small 3'},
                 transcribe:'https://api.mistral.ai/v1/audio/transcriptions',
                 chat:'https://api.mistral.ai/v1/conversations',
                  chatMode:'conversations'}
@@ -90,12 +90,12 @@
 
     // ── Settings ─────────────────────────────────────────
     var KKEY = 'x_captions_api_keys';
-    var DEF = {bg:'#000000', bgOp:85, size:'15', lang:'en', provider:'mistral', model:'voxtral-mini-latest', translateModel:'mistral-small-latest', autoMute: false, autoCaption: false};
+    var DEF = {bg:'#000000', bgOp:85, size:'15', lang:'en', provider:'mistral', model:'voxtral-mini-transcribe-3', translateModel:'mistral-small-latest', autoMute: false, autoCaption: false};
     var s;
     try { s = JSON.parse(localStorage.getItem(SKEY) || JSON.stringify(DEF)); }
     catch(e) { s = JSON.parse(JSON.stringify(DEF)); }
     if (!s.provider) s.provider = DEF.provider;
-    if (!s.model) s.model = DEF.model;
+    if (!s.model || s.model === 'voxtral-mini-latest' || s.model === 'voxtral-latest') s.model = DEF.model;
     if (s.bgOp === undefined) s.bgOp = DEF.bgOp;
     if (s.autoMute === undefined) s.autoMute = DEF.autoMute;
     if (s.autoCaption === undefined) s.autoCaption = DEF.autoCaption;
@@ -354,6 +354,16 @@
         }
         if (!track) return {hasNative:false, inTargetLang:false, trackLang:''};
         var tl = (track.language || '').toLowerCase().slice(0, 2);
+        // Detect actual language from text content — X sometimes mislabels
+        // (e.g. Russian audio labeled as 'en'). Check for Cyrillic.
+        var sampleText = '';
+        if (track.cues && track.cues.length) {
+            for (var _ci = 0; _ci < Math.min(track.cues.length, 5); _ci++) {
+                sampleText += (track.cues[_ci].text || '') + ' ';
+            }
+        }
+        var hasCyrillic = /[\u0400-\u04FF]/.test(sampleText);
+        if (hasCyrillic && tl === 'en') tl = 'ru';
         var target = (s.lang === 'original') ? tl : s.lang;
         return {hasNative:true, inTargetLang: (tl === target || s.lang === 'original'), trackLang: tl};
     }
@@ -1101,6 +1111,9 @@
         parts.push('--'+bd); parts.push('Content-Disposition: form-data; name="model"'); parts.push(''); parts.push(model);
         parts.push('--'+bd); parts.push('Content-Disposition: form-data; name="file_url"'); parts.push(''); parts.push(url);
         parts.push('--'+bd); parts.push('Content-Disposition: form-data; name="timestamp_granularities"'); parts.push(''); parts.push('segment');
+        if (s.lang && s.lang !== 'original') {
+            parts.push('--'+bd); parts.push('Content-Disposition: form-data; name="language"'); parts.push(''); parts.push(s.lang);
+        }
         parts.push('--'+bd+'--');
 
         var r;
@@ -1138,11 +1151,13 @@
                 var raw = j.segments.map(function(s){ return {start:s.start, end:s.end, text:(s.text||'').trim()}; });
                 if (s.lang === 'original') {
                     cacheVideoCaps(capKey, raw);
+                    setCapsInfo(capKey, true);
                     hideCaps(); _activeTweetId = capKey; showCaps();
                 } else {
                     statusMsg('Translating...');
                     if (!pv.chat) {
                         cacheVideoCaps(capKey, raw);
+                        setCapsInfo(capKey, true);
                         hideCaps(); _activeTweetId = capKey; showCaps();
                         return;
                     }
@@ -1183,7 +1198,7 @@
     function showCaps() {
         var caps = _videoCaps.get(_activeTweetId); if(!caps) return;
         var p=videoPlayer(); if(!p) return; var v=p.querySelector('video'); if(!v) return;
-        ripCaps(p); var o=document.createElement('div'); o.setAttribute('data-x-feature','co');
+        var ps=document.querySelectorAll('[data-testid="videoPlayer"]'); for(var _ri=0;_ri<ps.length;_ri++) ripCaps(ps[_ri]); var o=document.createElement('div'); o.setAttribute('data-x-feature','co');
         o.style.cssText='position:absolute;bottom:'+ctrlBottom()+';left:0;right:0;text-align:center;padding:8px 16px;z-index:9999;pointer-events:none;';
         var t=document.createElement('div'); t.id='ct';
         t.style.cssText='display:inline-block;background:'+bgCSS()+';color:#fff;padding:8px 16px;border-radius:6px;font:'+s.size+'px/1.5 sans-serif;max-width:85%;text-align:center;text-shadow:0 0 3px #000,0 0 5px #000;';
@@ -1199,7 +1214,7 @@
         v.addEventListener('timeupdate', capFn);
         _cleanups[_activeTweetId] = function() { v.removeEventListener('timeupdate', capFn); };
     }
-    function hideCaps(){var p=videoPlayer();if(p) ripCaps(p);}
+    function hideCaps(){var ps=document.querySelectorAll('[data-testid="videoPlayer"]');for(var i=0;i<ps.length;i++) ripCaps(ps[i]);}
     function ripCaps(p){var els=p.querySelectorAll('[data-x-feature="co"]');for(var i=0;i<els.length;i++)els[i].remove();}
     function runCleanup(tweetId) {
         if (tweetId && _cleanups[tweetId]) { _cleanups[tweetId](); delete _cleanups[tweetId]; }
