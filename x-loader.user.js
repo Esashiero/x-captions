@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X.com AI Captions
 // @namespace    local.x-features
-// @version      2.5
+// @version      2.6
 // @description  AI captions for X/Twitter videos. Handles quoted tweets + translates existing native subtitles.
 // @author       Hermes
 // @match        https://x.com/*
@@ -1033,10 +1033,16 @@
         };
         document.getElementById('xcs-regen').onclick = function() {
             var tid = _activeTweetId;
-            if (tid) { _videoCaps.delete(tid); _videoUrls.delete(tid); }
+            if (tid) { _videoCaps.delete(tid); _videoUrls.delete(tid); _capsInfo.delete(tid); }
+            // Clear any existing caption overlay
+            var ps = document.querySelectorAll('[data-testid="videoPlayer"]');
+            for (var _rp = 0; _rp < ps.length; _rp++) {
+                var els = ps[_rp].querySelectorAll('[data-x-feature="co"]');
+                for (var _re = 0; _re < els.length; _re++) els[_re].remove();
+            }
             if (pan.parentNode) pan.remove();
             var pl = videoPlayer(); if(!pl) return;
-            var cc = pl.querySelector('[data-x-feature="cc"]'); if(cc){ cc.setAttribute('data-on','0'); toggleCC(cc); }
+            var cc = pl.querySelector('[data-x-feature="cc"]'); if(cc){ cc.setAttribute('data-on','0'); cc.style.opacity='.55'; toggleCC(cc); }
         };
         document.getElementById('xcs-reset').onclick = function() {
             s.bg = DEF.bg; s.bgOp = DEF.bgOp; s.size = DEF.size;
