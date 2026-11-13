@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X.com AI Captions
 // @namespace    local.x-features
-// @version      2.6
+// @version      2.7
 // @description  AI captions for X/Twitter videos. Handles quoted tweets + translates existing native subtitles.
 // @author       Hermes
 // @match        https://x.com/*
@@ -90,7 +90,7 @@
 
     // ── Settings ─────────────────────────────────────────
     var KKEY = 'x_captions_api_keys';
-    var DEF = {bg:'#000000', bgOp:85, size:'15', lang:'en', provider:'mistral', model:'voxtral-mini-transcribe-3', translateModel:'mistral-small-latest', autoMute: false, autoCaption: false, skipLangs:''};
+    var DEF = {bg:'#000000', bgOp:60, size:'14', lang:'en', provider:'mistral', model:'voxtral-mini-transcribe-3', translateModel:'mistral-small-latest', autoMute: false, autoCaption: false, skipLangs:''};
     var s;
     try { s = JSON.parse(localStorage.getItem(SKEY) || JSON.stringify(DEF)); }
     catch(e) { s = JSON.parse(JSON.stringify(DEF)); }
@@ -542,10 +542,10 @@
         var o = p.querySelector('[data-x-feature="co-err"]');
         if (!o) { o = document.createElement('div'); o.setAttribute('data-x-feature','co-err');
                   var vc = p.querySelector('[data-testid="videoComponent"]'); if (vc) vc.appendChild(o); }
-        o.style.cssText = 'position:absolute;bottom:'+ctrlBottom()+';left:0;right:0;text-align:center;padding:8px 16px;z-index:9999;pointer-events:none;';
+        o.style.cssText = 'position:absolute;bottom:'+ctrlBottom()+';left:0;right:0;text-align:center;padding:4px 8px;z-index:9999;pointer-events:none;';
         o.textContent = '';
         var t = document.createElement('div');
-        t.style.cssText = 'display:inline-block;background:rgba(127,29,29,.85);color:#fff;padding:6px 14px;border-radius:6px;font:13px/1.4 sans-serif;max-width:80%;';
+        t.style.cssText = 'display:inline-block;background:rgba(127,29,29,.85);color:#fff;padding:4px 8px;border-radius:8px;font:13px/1.4 system-ui,-apple-system,sans-serif;max-width:80%;';
         t.textContent = msg; o.appendChild(t);
         noteErr(msg);
     }
@@ -1028,7 +1028,7 @@
             }
             localStorage.setItem(SKEY, JSON.stringify(s));
             var ct = document.getElementById('ct');
-            if (ct) ct.style.cssText = 'display:inline-block;background:'+bgCSS()+';color:#fff;padding:8px 16px;border-radius:6px;font:'+s.size+'px/1.5 sans-serif;max-width:85%;text-align:center;text-shadow:0 0 3px #000,0 0 5px #000;';
+            if (ct) ct.style.cssText = 'display:inline-block;background:'+bgCSS()+';color:#fff;padding:4px 8px;border-radius:8px;font:'+s.size+'px/1.5 system-ui,-apple-system,sans-serif;max-width:85%;text-align:center;text-shadow:0 0 3px #000,0 0 5px #000;';
             if (pan.parentNode) pan.remove();
         };
         document.getElementById('xcs-regen').onclick = function() {
@@ -1063,9 +1063,9 @@
             var plpv = videoPlayer();
             if (plpv) {
                 var ovp = document.createElement('div'); ovp.setAttribute('data-x-feature','co'); ovp.id='xcs-preview';
-                ovp.style.cssText='position:absolute;bottom:'+ctrlBottom()+';left:0;right:0;text-align:center;padding:8px 16px;z-index:9999;pointer-events:none;';
+                ovp.style.cssText='position:absolute;bottom:'+ctrlBottom()+';left:0;right:0;text-align:center;padding:4px 8px;z-index:9999;pointer-events:none;';
                 var tp=document.createElement('div'); tp.id='xcs-preview-cap'; tp.setAttribute('data-x-role','preview');
-                tp.style.cssText='display:inline-block;background:'+bgCSS()+';color:#fff;padding:8px 16px;border-radius:6px;font:'+s.size+'px/1.5 sans-serif;max-width:85%;text-align:center;text-shadow:0 0 3px #000,0 0 5px #000;';
+                tp.style.cssText='display:inline-block;background:'+bgCSS()+';color:#fff;padding:4px 8px;border-radius:8px;font:'+s.size+'px/1.5 system-ui,-apple-system,sans-serif;max-width:85%;text-align:center;text-shadow:0 0 3px #000,0 0 5px #000;';
                 tp.textContent='Preview captions';
                 ovp.appendChild(tp); var vc=plpv.querySelector('[data-testid="videoComponent"]'); if(vc) vc.appendChild(ovp);
             }
@@ -1200,9 +1200,9 @@
     function statusMsg(msg) {
         var p=videoPlayer(); if(!p) return; ripCaps(p);
         var o=document.createElement('div'); o.setAttribute('data-x-feature','co');
-        o.style.cssText='position:absolute;bottom:'+ctrlBottom()+';left:0;right:0;text-align:center;padding:8px 16px;z-index:9999;pointer-events:none;';
+        o.style.cssText='position:absolute;bottom:'+ctrlBottom()+';left:0;right:0;text-align:center;padding:4px 8px;z-index:9999;pointer-events:none;';
         var t=document.createElement('div');
-        t.style.cssText='display:inline-block;background:rgba(0,0,0,.75);color:#fff;padding:6px 14px;border-radius:6px;font:14px/1.4 sans-serif;max-width:80%;';
+        t.style.cssText='display:inline-block;background:rgba(0,0,0,.75);color:#fff;padding:4px 8px;border-radius:8px;font:14px/1.4 system-ui,-apple-system,sans-serif;max-width:80%;';
         t.textContent=msg; o.appendChild(t);
         var vc=p.querySelector('[data-testid="videoComponent"]'); if(vc) vc.appendChild(o);
     }
@@ -1210,9 +1210,9 @@
         var caps = _videoCaps.get(_activeTweetId); if(!caps) return;
         var p=videoPlayer(); if(!p) return; var v=p.querySelector('video'); if(!v) return;
         var ps=document.querySelectorAll('[data-testid="videoPlayer"]'); for(var _ri=0;_ri<ps.length;_ri++) ripCaps(ps[_ri]); var o=document.createElement('div'); o.setAttribute('data-x-feature','co');
-        o.style.cssText='position:absolute;bottom:'+ctrlBottom()+';left:0;right:0;text-align:center;padding:8px 16px;z-index:9999;pointer-events:none;';
+        o.style.cssText='position:absolute;bottom:'+ctrlBottom()+';left:0;right:0;text-align:center;padding:4px 8px;z-index:9999;pointer-events:none;';
         var t=document.createElement('div'); t.id='ct';
-        t.style.cssText='display:inline-block;background:'+bgCSS()+';color:#fff;padding:8px 16px;border-radius:6px;font:'+s.size+'px/1.5 sans-serif;max-width:85%;text-align:center;text-shadow:0 0 3px #000,0 0 5px #000;';
+        t.style.cssText='display:inline-block;background:'+bgCSS()+';color:#fff;padding:4px 8px;border-radius:8px;font:'+s.size+'px/1.5 system-ui,-apple-system,sans-serif;max-width:85%;text-align:center;text-shadow:0 0 3px #000,0 0 5px #000;';
         var c=v.currentTime; for(var i=0;i<caps.length;i++){if(c>=caps[i].start&&c<caps[i].end){t.textContent=caps[i].text;break;}}
         o.appendChild(t); var vc=p.querySelector('[data-testid="videoComponent"]'); if(vc) vc.appendChild(o);
         runCleanup(_activeTweetId);
