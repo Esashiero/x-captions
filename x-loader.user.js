@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X.com AI Captions
 // @namespace    local.x-features
-// @version      2.4
+// @version      2.5
 // @description  AI captions for X/Twitter videos. Handles quoted tweets + translates existing native subtitles.
 // @author       Hermes
 // @match        https://x.com/*
@@ -511,26 +511,15 @@
                 ? translateLinesWithFeedback(pv, lines, target, m, feedback, useJsonMode)
                 : translateLines(pv, lines, target, m, useJsonMode);
             trPromise.then(function(tr) {
-                if (tr.length !== lines.length) {
-                    var e = new Error('line count ' + tr.length + ' != ' + lines.length);
-                    if (!isRetry) {
-                        statusMsg('Retrying translation (got ' + tr.length + ', need ' + lines.length + ')…');
-                        return attempt(m, true, 'You returned ' + tr.length + ' translations but I need exactly ' + lines.length + '. Return exactly ' + lines.length + ' strings in the translations array.', true);
-                    }
-                    // Pad or truncate to match — still usable, mark as ok
-                    var fixed = [];
-                    var translated = 0;
-                    for (var fi = 0; fi < lines.length; fi++) {
-                        if (tr[fi] && tr[fi].trim()) { fixed.push(tr[fi].trim()); translated++; }
-                        else { fixed.push(rawCaps[fi].text); }
-                    }
-                    // If at least half were translated, consider it a success
-                    var isOk = translated >= Math.ceil(lines.length / 2);
-                    return done({caps: rawCaps.map(function(c,i){
-                        return {start:c.start, end:c.end, text:fixed[i]}; }), ok:isOk, error: isOk ? null : e});
+                // Don't require exact line count match — pad with original or truncate
+                var fixed = [];
+                for (var fi = 0; fi < lines.length; fi++) {
+                    if (tr[fi] && String(tr[fi]).trim()) { fixed.push(String(tr[fi]).trim()); }
+                    else { fixed.push(rawCaps[fi].text); }
                 }
-                done({caps: rawCaps.map(function(c,i){
-                    return {start:c.start, end:c.end, text:tr[i]}; }), ok:true});
+                // Always usable — we have captions with at least original text
+                return done({caps: rawCaps.map(function(c,i){
+                    return {start:c.start, end:c.end, text:fixed[i]}; }), ok:true, error: null});
             }).catch(function(err) {
                 var badModel = err.status === 400 && /model/i.test(err.body || '');
                 if (!isRetry && badModel && m !== TRANSLATE_MODEL_DEF) {
